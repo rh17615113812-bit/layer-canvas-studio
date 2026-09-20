@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.psd
+.env
+.env.local
+work/
+outputs/
+*.log
+logs/
