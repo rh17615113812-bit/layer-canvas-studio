@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { clampPixelBBox, normalizedToPixelBBox, pixelToNormalizedBBox } from '../src/coordinates.ts';
 import { DEFAULT_VISION_INSTRUCTION, selectSplittableBoxes } from '../src/smartSplit.ts';
 import { placeAssetInComposite } from '../src/seedream.ts';
-import { assignLayerToArtboard, artboardContainingPoint, createArtboardDocument, createGroupDocument, layerToArtboardCoordinates, nextArtboardOrigin, resizeArtboard, translateArtboard } from '../src/artboards.ts';
+import { assignLayerToArtboard, artboardContainingPoint, createArtboardDocument, createGroupDocument, layerToArtboardCoordinates, nextArtboardOrigin, removeArtboard, resizeArtboard, translateArtboard } from '../src/artboards.ts';
 import { assignLayerBatchToArtboard, rangeLayerSelection, removeLayerBatch, reorderLayerBatch, rootMovingLayerIds, toggleLayerSelection } from '../src/layerOrder.ts';
 import { fitLocalAssetToBox } from '../src/localComfy.ts';
 
@@ -50,6 +50,22 @@ assert.deepEqual(resizedBoard.artboards[0], { id: 'a', name: 'A', x: 150, y: 90,
 assert.deepEqual({ x: resizedBoard.layers[0].x, y: resizedBoard.layers[0].y }, { x: 170, y: 140 });
 assert.deepEqual(resizedBoard.canvas, { width: 790, height: 811 });
 console.log('artboard resize tests passed');
+
+const removedArtboard = removeArtboard({
+  ...movedBoard,
+  artboards: [
+    movedBoard.artboards[0],
+    { id: 'b', name: 'B', x: 900, y: 0, width: 300, height: 400 },
+  ],
+  layers: [
+    ...movedBoard.layers,
+    { ...movedBoard.layers[0], id: 'b-layer', artboardId: 'b', x: 920, y: 20 },
+  ],
+}, 'a');
+assert.deepEqual(removedArtboard.artboards.map((artboard) => artboard.id), ['b']);
+assert.deepEqual(removedArtboard.layers.map((layer) => layer.id), ['b-layer']);
+assert.deepEqual(removedArtboard.canvas, { width: 1200, height: 400 });
+console.log('artboard deletion tests passed');
 
 const outsideBoard = assignLayerToArtboard(movedBoard, 'l');
 assert.equal(outsideBoard.layers[0].artboardId, undefined);

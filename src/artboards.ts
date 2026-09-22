@@ -84,6 +84,23 @@ export const resizeArtboard = (
   return { ...document, canvas: documentBounds(artboards), artboards };
 };
 
+/** Removes an artboard together with all layers assigned to it. */
+export const removeArtboard = (
+  document: DocumentState,
+  artboardId: string,
+): DocumentState => {
+  const artboards = document.artboards.filter(
+    (artboard) => artboard.id !== artboardId,
+  );
+  if (artboards.length === document.artboards.length) return document;
+  return {
+    ...document,
+    canvas: documentBounds(artboards),
+    artboards,
+    layers: document.layers.filter((layer) => layer.artboardId !== artboardId),
+  };
+};
+
 export const assignLayerToArtboard = (
   document: DocumentState,
   layerId: string,

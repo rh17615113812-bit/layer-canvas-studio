@@ -23,6 +23,7 @@ import {
   localComfyLayerSplit,
   type LocalComfyConfig,
 } from "./localComfy";
+import { runningHubLayerSplit, type RunningHubConfig } from "./runningHub";
 import type { DocumentState, LayerNode, PageState, SceneState } from "./types";
 import {
   assignLayerToArtboard as assignLayerDocumentToArtboard,
@@ -30,6 +31,7 @@ import {
   artboardForLayer,
   documentBounds,
   nextArtboardOrigin,
+  removeArtboard,
   resizeArtboard,
   translateArtboard,
 } from "./artboards";
@@ -1395,6 +1397,16 @@ export default function App() {
     setContentSelectionIds([]);
     setNotice(`已删除 ${existingIds.length} 个选中图层。`);
   };
+  const deleteSelectedArtboard = () => {
+    if (!selectedArtboardId || selectedId || contentSelectionIds.length) return;
+    const artboard = doc.artboards.find(
+      (item) => item.id === selectedArtboardId,
+    );
+    if (!artboard) return;
+    setDoc((current) => removeArtboard(current, artboard.id));
+    setSelectedArtboardId(null);
+    setNotice(`已删除画板「${artboard.name}」及其所属图层。`);
+  };
   const alignLayers = (
     mode:
       | "left"
@@ -1678,6 +1690,52 @@ export default function App() {
       setSplitting(false);
     }
   };
+  const splitWithRunningHub = async (
+    targetLayer: LayerNode,
+    boxes: SmartSplitBox[],
+    config: RunningHubConfig,
+    propagateError = false,
+  ) => {
+    const source = targetLayer.source;
+    if (!source) return setNotice("请先导入一张图片，再使用 RunningHub 拆分。");
+    if (splitting) return;
+    const splitBoxes = selectSplittableBoxes(boxes);
+    if (!splitBoxes.length) {
+      const message = "RunningHub 拆分需要至少一个可拆分的 UI 框选区域。";
+      if (propagateError) throw new Error(message);
+      return setNotice(message);
+    }
+    setSplitting(true);
+    setNotice(`RunningHub 正在依次处理 ${splitBoxes.length} 个框选区域…`);
+    try {
+      const imageWidth = targetLayer.assetWidth || targetLayer.width || doc.canvas.width;
+      const imageHeight = targetLayer.assetHeight || targetLayer.height || doc.canvas.height;
+      const layers = await runningHubLayerSplit(source, splitBoxes, config);
+      const artboard = artboardForLayer(doc, targetLayer);
+      if (!artboard) throw new Error("源图片没有所属画板，无法放置 RunningHub 拆分结果。");
+      const scaleX = targetLayer.width / imageWidth;
+      const scaleY = targetLayer.height / imageHeight;
+      const baseZ = Math.max(-1, ...doc.layers.map((layer) => layer.zIndex)) + 1;
+      const placed = layers.map((layer, index) => ({
+        ...layer,
+        artboardId: artboard.id,
+        x: targetLayer.x + layer.x * scaleX,
+        y: targetLayer.y + layer.y * scaleY,
+        width: layer.width * scaleX,
+        height: layer.height * scaleY,
+        zIndex: baseZ + index,
+      }));
+      setDoc((current) => ({ ...current, layers: [...current.layers, ...placed] }));
+      setSelectedArtboardId(artboard.id);
+      setSelectedId(placed[0]?.id ?? null);
+      setNotice(`已将 ${placed.length} 个 RunningHub 拆分图层按原框位置等比放回画板「${artboard.name}」。`);
+    } catch (error) {
+      if (propagateError) throw error;
+      setNotice(error instanceof Error ? error.message : "RunningHub 工作流拆分失败。");
+    } finally {
+      setSplitting(false);
+    }
+  };
   const smartSplitPortal =
     smartSplitOpen && selected?.kind === "image"
       ? createPortal(
@@ -1687,7 +1745,7 @@ export default function App() {
             onStart={async (
               boxes: SmartSplitBox[],
               mode: SplitMode,
-              localConfig?: LocalComfyConfig,
+              config?: LocalComfyConfig | RunningHubConfig,
             ) => {
               const splitBoxes = selectSplittableBoxes(boxes);
               if (boxes.length && !splitBoxes.length) {
@@ -1695,8 +1753,11 @@ export default function App() {
                 return;
               }
               if (mode === "local") {
-                if (!localConfig) throw new Error("缺少 ComfyUI 本地拆分配置。");
-                await splitWithLocalComfy(selected, splitBoxes, localConfig, true);
+                if (!config) throw new Error("缺少 ComfyUI 本地拆分配置。");
+                await splitWithLocalComfy(selected, splitBoxes, config as LocalComfyConfig, true);
+              } else if (mode === "runninghub") {
+                if (!config) throw new Error("缺少 RunningHub 工作流配置。");
+                await splitWithRunningHub(selected, splitBoxes, config as RunningHubConfig, true);
               } else {
                 await splitWithSeedream(
                   selected,
@@ -1729,13 +1790,24 @@ export default function App() {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, select, [contenteditable="true"]'))
         return;
-      if (smartSplitOpen || !selectedId && !contentSelectionIds.length) return;
+      if (
+        smartSplitOpen ||
+        (!selectedId && !contentSelectionIds.length && !selectedArtboardId)
+      )
+        return;
       event.preventDefault();
-      deleteSelectedLayers();
+      if (selectedId || contentSelectionIds.length) deleteSelectedLayers();
+      else deleteSelectedArtboard();
     };
     window.addEventListener("keydown", onDeleteKey);
     return () => window.removeEventListener("keydown", onDeleteKey);
-  }, [contentSelectionIds, doc.layers, selectedId, smartSplitOpen]);
+  }, [
+    contentSelectionIds,
+    doc.layers,
+    selectedArtboardId,
+    selectedId,
+    smartSplitOpen,
+  ]);
   useEffect(() => {
     const onHistoryKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z")
@@ -2467,6 +2539,7 @@ export default function App() {
     const workspace = host.current,
       layersPanel = document.querySelector<HTMLElement>(".layers-panel");
     if (!workspace || !layersPanel) return;
+    if (smartSplitOpen) return;
     layersPanel
       .querySelectorAll(".resource-browser")
       .forEach((item) => item.remove());
@@ -2598,7 +2671,7 @@ export default function App() {
         item.style.display = "";
       });
     };
-  }, [doc.layers, doc.artboards, activeArtboard?.id, selectedId]);
+  }, [doc.layers, doc.artboards, activeArtboard?.id, selectedId, smartSplitOpen]);
   useEffect(() => {
     document
       .querySelectorAll<HTMLLabelElement>(

@@ -115,10 +115,67 @@ const runComfyWorkflow = async ({ image, comfyUrl, workflow: suppliedWorkflow, i
   }
   return { prompt_id: queued.prompt_id, images };
 };
+const runningHubFailure = (body, fallback) => {
+  const data = body?.data && typeof body.data === 'object' ? body.data : body;
+  const code = data?.errorCode ?? body?.errorCode ?? body?.code;
+  const message = data?.errorMessage || data?.message || body?.errorMessage || body?.message || data?.error?.message || body?.error?.message || data?.error || body?.error;
+  const detail = typeof message === 'string' ? message.replace(/[\r\n]+/g, ' ').trim().slice(0, 500) : '';
+  return `${fallback}${code !== undefined && code !== '' ? `（错误码 ${code}）` : ''}${detail ? `：${detail}` : ''}`;
+};
+const runningHubJson = async (response, fallback) => {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || (Number.isFinite(Number(body?.code)) && Number(body.code) !== 0)) throw new Error(runningHubFailure(body, fallback));
+  return body;
+};
+const runningHubData = body => body?.data && typeof body.data === 'object' ? body.data : body;
+const runningHubStatus = body => String(runningHubData(body)?.status || body?.status || '').toUpperCase();
+const runRunningHubWorkflow = async ({ image, config = {} }) => {
+  const apiKey = process.env.RUNNINGHUB_API_KEY;
+  if (!apiKey) throw new Error('未配置 RUNNINGHUB_API_KEY。请仅在本机 .env.local 中填写。');
+  const workflowId = String(config.workflowId || process.env.RUNNINGHUB_WORKFLOW_ID || '').trim();
+  const inputNodeId = String(config.inputNodeId || '').trim();
+  const inputFieldName = String(config.inputFieldName || 'image').trim();
+  if (!workflowId) throw new Error('请在 RunningHub 配置中填写工作流 API ID，或配置 RUNNINGHUB_WORKFLOW_ID。');
+  const file = dataUrlFile(image);
+  const form = new FormData();
+  form.append('file', new Blob([file.bytes], { type: file.mime }), `layer-canvas-${crypto.randomUUID()}.${file.extension}`);
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  const uploaded = await runningHubJson(await fetch('https://www.runninghub.cn/openapi/v2/media/upload/binary', { method: 'POST', headers, body: form }), '上传图片到 RunningHub 失败。');
+  const imageUrl = runningHubData(uploaded)?.download_url || uploaded?.download_url;
+  if (!imageUrl) throw new Error('RunningHub 上传接口没有返回 download_url。');
+  const instanceType = ['default', 'plus', 'ultra'].includes(config.instanceType) ? config.instanceType : 'default';
+  const nodeInfoList = inputNodeId ? [{ nodeId: inputNodeId, fieldName: inputFieldName, fieldValue: imageUrl, description: 'Layer Canvas 拆分区域输入图' }] : [];
+  const submitted = await runningHubJson(await fetch(`https://www.runninghub.cn/openapi/v2/run/workflow/${encodeURIComponent(workflowId)}`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ addMetadata: config.addMetadata === true, nodeInfoList, instanceType, usePersonalQueue: config.usePersonalQueue === true }),
+  }), '提交 RunningHub 工作流失败。');
+  const submittedData = runningHubData(submitted);
+  const taskId = String(submittedData?.taskId || submitted?.taskId || '');
+  if (!taskId) throw new Error(runningHubFailure(submitted, 'RunningHub 未返回 taskId，任务未进入可查询状态'));
+  if (runningHubStatus(submitted) === 'FAILED') throw new Error(`RunningHub 任务 ${taskId} 提交失败。`);
+  const deadline = Date.now() + 180000;
+  let last = submitted;
+  while (Date.now() < deadline) {
+    const status = runningHubStatus(last);
+    if (status === 'SUCCESS') break;
+    if (status === 'FAILED') throw new Error(`RunningHub 任务 ${taskId} 执行失败。`);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    last = await runningHubJson(await fetch('https://www.runninghub.cn/openapi/v2/query', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId }) }), `无法查询 RunningHub 任务 ${taskId}。`);
+  }
+  if (runningHubStatus(last) !== 'SUCCESS') throw new Error(`RunningHub 任务 ${taskId} 状态未知或超时；系统未自动重试，请在 RunningHub 控制台确认后手动重试。`);
+  const resultData = runningHubData(last);
+  const allResults = Array.isArray(resultData?.results) ? resultData.results : Array.isArray(last?.results) ? last.results : [];
+  const allowed = Array.isArray(config.outputNodeIds) && config.outputNodeIds.length ? new Set(config.outputNodeIds.map(String)) : null;
+  const result = allResults.find(item => typeof item?.url === 'string' && (!allowed || allowed.has(String(item.nodeId))));
+  if (!result?.url) throw new Error('RunningHub 工作流没有返回匹配的图片，请检查输出节点 ID。');
+  const output = await fetch(result.url);
+  if (!output.ok) throw new Error('无法读取 RunningHub 输出图片。');
+  return { taskId, mime: output.headers.get('content-type') || 'image/png', base64: Buffer.from(await output.arrayBuffer()).toString('base64') };
+};
 
 createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': 'http://127.0.0.1:5173', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
-  if (req.method !== 'POST' || !['/api/seedream/layer-split', '/api/vision/boxes', '/api/comfyui/layer-split'].includes(req.url)) return json(res, 404, { error: 'Not found' });
+  if (req.method !== 'POST' || !['/api/seedream/layer-split', '/api/vision/boxes', '/api/comfyui/layer-split', '/api/runninghub/layer-split'].includes(req.url)) return json(res, 404, { error: 'Not found' });
   let raw = '';
   for await (const chunk of req) { raw += chunk; if (raw.length > 28 * 1024 * 1024) return json(res, 413, { error: '图片过大，请压缩至 20MB 以下后再试。' }); }
   try {
@@ -126,6 +183,10 @@ createServer(async (req, res) => {
     const { image, prompt, metadata, instruction } = body;
     if (typeof image !== 'string' || !image.startsWith('data:image/')) return json(res, 400, { error: '需要一张本地图片。' });
     if (req.url === '/api/comfyui/layer-split') return json(res, 200, await runComfyWorkflow(body));
+    if (req.url === '/api/runninghub/layer-split') {
+      const result = await runRunningHubWorkflow(body);
+      return json(res, 200, { taskId: result.taskId, imageUrl: `data:${result.mime};base64,${result.base64}` });
+    }
     if (!process.env.ARK_API_KEY) return json(res, 503, { error: '未配置 ARK_API_KEY。请复制 .env.example 为 .env.local，并填入方舟 API Key。' });
     if (req.url === '/api/vision/boxes') {
       const safeInstruction = typeof instruction === 'string' ? instruction.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 4000) : '';
