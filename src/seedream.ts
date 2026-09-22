@@ -22,32 +22,32 @@ const collectItems = (body: unknown): ApiLayer[] => {
   }
   return [];
 };
-const dimensions = (size: string | undefined, fallbackWidth: number, fallbackHeight: number) => {
-  const [width, height] = (size || '').split('x').map(Number);
-  return { width: Number.isFinite(width) ? width : fallbackWidth, height: Number.isFinite(height) ? height : fallbackHeight };
+const absoluteBounds = (item: ApiLayer, baseSize: Size) => {
+  if (Array.isArray(item.bounding_box)) return item.bounding_box;
+  if (item.bounding_box?.absolute) return item.bounding_box.absolute;
+  if (!item.bounding_box?.normalized) return undefined;
+  const [left, top, right, bottom] = item.bounding_box.normalized;
+  return [left * baseSize.width / 1000, top * baseSize.height / 1000, right * baseSize.width / 1000, bottom * baseSize.height / 1000] as Bounds;
 };
-const placement = (item: ApiLayer, fallbackWidth: number, fallbackHeight: number) => {
-  const absolute = absoluteBounds(item);
-  if (absolute) { const [left, top, right, bottom] = absolute; return { x: left, y: top, width: Math.max(2, right - left), height: Math.max(2, bottom - top) }; }
-  return { x: 0, y: 0, ...dimensions(item.size, fallbackWidth, fallbackHeight) };
+type Size = { width: number; height: number };
+type Rect = Size & { x: number; y: number };
+type Bounds = [number, number, number, number];
+
+export const placeAssetInComposite = (bounds: Bounds | undefined, baseSize: Size, targetSize: Size): Rect => {
+  if (!bounds) return { x: 0, y: 0, width: targetSize.width, height: targetSize.height };
+  const scaleX = targetSize.width / baseSize.width, scaleY = targetSize.height / baseSize.height;
+  const [left, top, right, bottom] = bounds;
+  return {
+    x: left * scaleX,
+    y: top * scaleY,
+    width: Math.max(1, (right - left) * scaleX),
+    height: Math.max(1, (bottom - top) * scaleY),
+  };
 };
-const absoluteBounds = (item: ApiLayer) => Array.isArray(item.bounding_box) ? item.bounding_box : item.bounding_box?.absolute;
 const sourceDimensions = async (source: string) => new Promise<{ width: number; height: number }>((resolve, reject) => {
   const image = new Image();
   image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
   image.onerror = () => reject(new Error('无法读取 AI 返回的图层图片尺寸。'));
-  image.src = source;
-});
-const cropFullCanvasLayer = async (source: string, bounds: [number, number, number, number]) => new Promise<string>((resolve, reject) => {
-  const image = new Image();
-  image.onload = () => {
-    const [left, top, right, bottom] = bounds;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, right - left); canvas.height = Math.max(1, bottom - top);
-    canvas.getContext('2d')!.drawImage(image, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
-    resolve(canvas.toDataURL('image/png'));
-  };
-  image.onerror = () => reject(new Error('无法裁切 AI 返回的透明图层。'));
   image.src = source;
 });
 
@@ -57,24 +57,32 @@ export async function seedreamLayerSplit(image: string, width: number, height: n
   if (!response.ok) throw new Error(body.error || 'Seedream 图层拆分失败');
   // 官方响应 data 为扁平数组：z_index=0 是底图，其余条目为透明 PNG 图层。
   const items = collectItems(body);
-  const layers = await Promise.all(items.map(async (item, index): Promise<LayerNode | undefined> => {
+  const prepared = await Promise.all(items.map(async (item, index) => {
     const rawSource = dataUrl(item);
     if (!rawSource) return undefined;
-    const box = placement(item, width, height), bounds = absoluteBounds(item);
     const rawAsset = await sourceDimensions(rawSource);
-    // 部分响应返回“全画布透明 PNG”，有效内容位置由 bounding_box 描述；先无损裁切，避免再次缩放整张透明画布。
-    const shouldCrop = Boolean(bounds && rawAsset.width >= bounds[2] && rawAsset.height >= bounds[3] && (rawAsset.width > box.width + 1 || rawAsset.height > box.height + 1));
-    const source = shouldCrop ? await cropFullCanvasLayer(rawSource, bounds!) : rawSource;
-    const asset = shouldCrop ? { width: box.width, height: box.height } : rawAsset;
+    return { item, index, rawSource, rawAsset };
+  })).then(results => results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)));
+  const base = prepared.find(entry => entry.item.z_index === 0) || prepared.find(entry => !itemHasBounds(entry.item)) || prepared[0];
+  const baseSize = base?.rawAsset || { width, height };
+  const targetSize = { width, height };
+  const layers = prepared.map(({ item, index, rawSource, rawAsset }): LayerNode => {
+    // PNG 始终完整保留；bounding_box 定义它在基础输出图坐标系中的显示矩形。
+    // 再把整套坐标统一映射回输入原图尺寸，复现官方预览的 1:1 合成效果。
+    const box = placeAssetInComposite(item.z_index === 0 ? undefined : absoluteBounds(item, baseSize), baseSize, targetSize);
     return {
       id: crypto.randomUUID().replaceAll('-', ''), name: item.z_index === 0 ? 'AI 拆分底图' : item.name || item.description || `AI 图层 ${index + 1}`,
-      kind: 'image' as const, parentId: null, zIndex: item.z_index ?? index, visible: true, locked: false, opacity: 1, source,
-      assetWidth: asset.width, assetHeight: asset.height, ...box,
+      kind: 'image' as const, parentId: null, zIndex: item.z_index ?? index, visible: true, locked: false, opacity: 1, source: rawSource,
+      assetWidth: rawAsset.width, assetHeight: rawAsset.height, ...box,
     };
-  })).then(results => results.filter((layer): layer is LayerNode => Boolean(layer)));
+  });
   if (!layers.length) {
     const shape = body && typeof body === 'object' ? Object.keys(body as Record<string, unknown>).join('、') || '空对象' : typeof body;
     throw new Error(`接口已返回成功，但未找到可用图层图片（响应字段：${shape}）。`);
   }
   return layers.sort((a, b) => a.zIndex - b.zIndex);
+}
+
+function itemHasBounds(item: ApiLayer) {
+  return Array.isArray(item.bounding_box) || Boolean(item.bounding_box?.absolute || item.bounding_box?.normalized);
 }

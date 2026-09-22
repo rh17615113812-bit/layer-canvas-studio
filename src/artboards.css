@@ -1,0 +1,31 @@
+.artboard-chip {
+  margin: -5px 0 12px;
+  padding: 7px 9px;
+  overflow: hidden;
+  border: 1px solid #45543c;
+  border-radius: 6px;
+  background: #1d2619;
+  color: #b6f04a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artboard-row {
+  margin-top: 5px;
+  border: 1px solid transparent;
+  font-weight: 700;
+}
+
+.artboard-row small {
+  margin-right: 6px;
+  color: #71806e;
+  font-size: 9px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.artboard-row.selected {
+  border-color: #708f3c;
+  background: #28371d;
+}

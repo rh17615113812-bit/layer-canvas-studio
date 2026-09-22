@@ -38,5 +38,5 @@ export async function importPsd(file: File): Promise<DocumentState> {
   };
   append(psd.children, null);
   if (!layers.some(layer => layer.kind === 'image')) throw new Error('该 PSD 没有可读取的栅格、文本或智能对象预览图层。');
-  return { version: '1.0', canvas: { width: psd.width, height: psd.height }, layers };
+  return { version: '1.0', canvas: { width: psd.width, height: psd.height }, artboards: [], layers };
 }

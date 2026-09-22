@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node dev.mjs",
     "api": "node server.mjs",
     "build": "tsc --noEmit && vite build",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types tests/coordinates.test.ts"
   },
   "dependencies": {
     "@types/node": "^24.0.0",

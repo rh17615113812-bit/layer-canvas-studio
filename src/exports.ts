@@ -1,6 +1,7 @@
 import { writePsd } from 'ag-psd';
 import { strToU8, zipSync } from 'fflate';
 import type { DocumentState, LayerNode } from './types';
+import { createArtboardDocument, createGroupDocument, layerToArtboardCoordinates } from './artboards';
 
 const safeName = (value: string) => value.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60) || 'layer';
 
@@ -9,8 +10,11 @@ const download = (name: string, blob: Blob) => {
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
+  link.style.display = 'none';
+  document.body.append(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 const loadImage = (src: string) =>
@@ -65,27 +69,45 @@ const dataUrlBytes = (dataUrl: string) => {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 };
 
-export const exportJson = (document: DocumentState) =>
-  download('layer-canvas-layout.json', new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' }));
+const createExportDocument = (document: DocumentState, artboardId?: string, groupId?: string) =>
+  groupId ? createGroupDocument(document, groupId) : createArtboardDocument(document, artboardId);
 
-export const exportPsd = async (document: DocumentState) => {
-  const layers = [...document.layers]
-    .filter((layer) => layer.kind === 'image' && layer.source)
+export const exportJson = (document: DocumentState, artboardId?: string, groupId?: string) => {
+  const output = createExportDocument(document, artboardId, groupId);
+  download(`${safeName(output.artboards[0].name)}-layout.json`, new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' }));
+};
+
+export const exportPsd = async (document: DocumentState, artboardId?: string, groupId?: string) => {
+  const output = createExportDocument(document, artboardId, groupId);
+  const artboard = output.artboards[0];
+  if (!artboard) throw new Error('当前 Page 中没有可导出的画板。');
+  const exportWidth = Math.max(1, Math.round(artboard.width));
+  const exportHeight = Math.max(1, Math.round(artboard.height));
+  const layers = [...output.layers]
+    .filter((layer) => layer.artboardId === artboard.id && layer.kind === 'image' && layer.source)
     .sort((a, b) => a.zIndex - b.zIndex);
   const prepared = await Promise.all(layers.map(async (layer) => {
     const original = await toCanvas(layer.source!);
-    const left = Math.round(layer.x), top = Math.round(layer.y);
+    const local = layerToArtboardCoordinates(layer, artboard);
+    const left = Math.round(local.x), top = Math.round(local.y);
     const width = Math.max(1, Math.round(layer.width)), height = Math.max(1, Math.round(layer.height));
     const smartSource = trimFullCanvasTransparency(original, width, height);
     const sourceWidth = smartSource.width, sourceHeight = smartSource.height;
     const linkedId = guid(layer.id, 'a');
+    const displayCanvas = toDisplayCanvas(smartSource, width, height);
     return {
+      sourceLayer: layer,
+      displayCanvas,
+      left,
+      top,
+      width,
+      height,
       layer: {
         name: layer.name,
         left, top, hidden: !layer.visible,
         opacity: Math.round((layer.opacity ?? 1) * 255),
         // This is Photoshop's raster preview and is intentionally rendered at the canvas display bounds.
-        canvas: toDisplayCanvas(smartSource, width, height),
+        canvas: displayCanvas,
         // The lossless source PNG is embedded below as a Photoshop Smart Object.
         placedLayer: {
           id: linkedId, placed: guid(layer.id, 'b'), type: 'raster',
@@ -97,10 +119,53 @@ export const exportPsd = async (document: DocumentState) => {
       linkedFile: { id: linkedId, name: `${safeName(layer.name)}.png`, type: 'png', data: dataUrlBytes(smartSource.toDataURL('image/png')) },
     };
   }));
+  const byId = new Map(output.layers.map(layer => [layer.id, layer]));
+  const renderedOpacity = (layer: LayerNode) => {
+    let opacity = 1;
+    let current: LayerNode | undefined = layer;
+    while (current) {
+      if (!current.visible) return 0;
+      opacity *= current.opacity ?? 1;
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    return Math.max(0, Math.min(1, opacity));
+  };
+  // PSD readers and Windows Explorer use the document composite/thumbnail instead of
+  // rebuilding every layer. Without this canvas ag-psd writes an empty black composite.
+  const composite = globalThis.document.createElement('canvas');
+  composite.width = exportWidth;
+  composite.height = exportHeight;
+  const compositeContext = composite.getContext('2d')!;
+  prepared.forEach(item => {
+    const opacity = renderedOpacity(item.sourceLayer);
+    if (!opacity) return;
+    compositeContext.save();
+    compositeContext.globalAlpha = opacity;
+    compositeContext.translate(item.left, item.top);
+    compositeContext.rotate(((item.sourceLayer.rotation ?? 0) * Math.PI) / 180);
+    compositeContext.drawImage(item.displayCanvas, 0, 0, item.width, item.height);
+    compositeContext.restore();
+  });
+  const thumbnailScale = Math.min(160 / exportWidth, 160 / exportHeight, 1);
+  const thumbnail = globalThis.document.createElement('canvas');
+  thumbnail.width = Math.max(1, Math.round(exportWidth * thumbnailScale));
+  thumbnail.height = Math.max(1, Math.round(exportHeight * thumbnailScale));
+  const thumbnailContext = thumbnail.getContext('2d')!;
+  const checkerSize = Math.max(6, Math.round(12 * thumbnailScale));
+  for (let y = 0; y < thumbnail.height; y += checkerSize) {
+    for (let x = 0; x < thumbnail.width; x += checkerSize) {
+      thumbnailContext.fillStyle =
+        (Math.floor(x / checkerSize) + Math.floor(y / checkerSize)) % 2
+          ? '#e9e9e9'
+          : '#ffffff';
+      thumbnailContext.fillRect(x, y, checkerSize, checkerSize);
+    }
+  }
+  thumbnailContext.drawImage(composite, 0, 0, thumbnail.width, thumbnail.height);
   const preparedById = new Map(layers.map((layer, index) => [layer.id, prepared[index].layer]));
   const createChildren = (parentId: string | null): unknown[] => {
     const children: unknown[] = [];
-    document.layers.filter(layer => layer.parentId === parentId).sort((a, b) => a.zIndex - b.zIndex).forEach(layer => {
+    output.layers.filter(layer => layer.artboardId === artboard.id && layer.parentId === parentId).sort((a, b) => a.zIndex - b.zIndex).forEach(layer => {
       if (layer.kind === 'group') children.push({ name: layer.name, hidden: !layer.visible, opacity: Math.round((layer.opacity ?? 1) * 255), children: createChildren(layer.id) });
       else {
         const preparedLayer = preparedById.get(layer.id);
@@ -110,12 +175,14 @@ export const exportPsd = async (document: DocumentState) => {
     return children;
   };
   const bytes = writePsd({
-    width: document.canvas.width,
-    height: document.canvas.height,
+    width: exportWidth,
+    height: exportHeight,
+    canvas: composite,
+    imageResources: { thumbnail },
     children: createChildren(null),
     linkedFiles: prepared.map(item => item.linkedFile),
   } as never);
-  download('layer-canvas.psd', new Blob([bytes], { type: 'application/octet-stream' }));
+  download(`${safeName(artboard.name)}.psd`, new Blob([bytes], { type: 'application/octet-stream' }));
 };
 
 const unityImporter = `using System.IO;
@@ -143,16 +210,17 @@ public static class LayerCanvasImporter {
   [System.Serializable] public class Layout { public Layer[] layers; }
 }`;
 
-export const exportUnityZip = (document: DocumentState) => {
+export const exportUnityZip = (document: DocumentState, artboardId?: string, groupId?: string) => {
+  const output = createExportDocument(document, artboardId, groupId);
   const files: Record<string, Uint8Array> = {
-    'layout.json': strToU8(JSON.stringify(document, null, 2)),
+    'layout.json': strToU8(JSON.stringify(output, null, 2)),
     'Assets/LayerCanvas/Editor/LayerCanvasImporter.cs': strToU8(unityImporter),
     'README.txt': strToU8('Import PNG files, select layout.json, then run Tools > Layer Canvas > Import selected layout. Set imported PNG files to Sprite (2D and UI) before binding sprites.'),
   };
-  document.layers
+  output.layers
     .filter((layer): layer is LayerNode & { source: string } => layer.kind === 'image' && Boolean(layer.source))
     .forEach((layer) => {
       files[`assets/${safeName(layer.name)}-${layer.id.slice(-6)}.png`] = dataUrlBytes(layer.source);
     });
-  download('layer-canvas-unity.zip', new Blob([zipSync(files)], { type: 'application/zip' }));
+  download(`${safeName(output.artboards[0].name)}-unity.zip`, new Blob([zipSync(files)], { type: 'application/zip' }));
 };
