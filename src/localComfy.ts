@@ -1,5 +1,6 @@
 import type { SmartSplitBox } from './SmartSplitWorkspace';
 import type { LayerNode } from './types';
+import { getOverlapMasksForBox } from './boxOverlap';
 
 export type LocalComfyConfig = {
   comfyUrl: string;
@@ -34,14 +35,19 @@ const loadImage = (source: string) =>
     image.src = source;
   });
 
-const cropDataUrl = (image: HTMLImageElement, box: Box) => {
+const cropDataUrl = (
+  image: HTMLImageElement,
+  box: Box,
+  overlapMasks: Box[] = [],
+) => {
   const [left, top, right, bottom] = box;
   const width = Math.max(1, Math.round(right - left));
   const height = Math.max(1, Math.round(bottom - top));
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  canvas.getContext('2d')!.drawImage(
+  const context = canvas.getContext('2d')!;
+  context.drawImage(
     image,
     left,
     top,
@@ -52,6 +58,15 @@ const cropDataUrl = (image: HTMLImageElement, box: Box) => {
     width,
     height,
   );
+  context.fillStyle = '#000000';
+  for (const mask of overlapMasks) {
+    context.fillRect(
+      (mask[0] - left) * width / (right - left),
+      (mask[1] - top) * height / (bottom - top),
+      (mask[2] - mask[0]) * width / (right - left),
+      (mask[3] - mask[1]) * height / (bottom - top),
+    );
+  }
   return canvas.toDataURL('image/png');
 };
 
@@ -62,19 +77,23 @@ export async function localComfyLayerSplit(
   source: string,
   boxes: SmartSplitBox[],
   config: LocalComfyConfig,
+  groupingBoxes: SmartSplitBox[] = boxes,
 ): Promise<LayerNode[]> {
   if (!boxes.length) throw new Error('本地拆分需要先手动框选或使用 AI 自动框选。');
   const image = await loadImage(source);
   const results: LayerNode[] = [];
+  const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
 
   // Run one crop at a time. A ComfyUI result has no placement metadata, so every
   // returned bitmap is fitted back into the exact box that produced its crop.
   for (const [index, box] of boxes.entries()) {
+    const groupingIndex = groupingIndexByBoxId.get(box.id) ?? index;
+    const overlapMasks = getOverlapMasksForBox(groupingBoxes, groupingIndex);
     const response = await fetch('http://127.0.0.1:8787/api/comfyui/layer-split', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        image: cropDataUrl(image, box.bbox),
+        image: cropDataUrl(image, box.bbox, overlapMasks),
         comfyUrl: config.comfyUrl,
         workflow: config.workflow,
         inputNodeId: config.inputNodeId,
@@ -99,7 +118,7 @@ export async function localComfyLayerSplit(
       y: placement.y,
       width: placement.width,
       height: placement.height,
-      zIndex: index,
+      zIndex: Math.max(0, groupingBoxes.length - 1 - groupingIndex),
       visible: true,
       locked: false,
       opacity: 1,

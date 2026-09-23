@@ -10,7 +10,7 @@ import {
   Transformer,
 } from "react-konva";
 import Konva from "konva";
-import { exportJson, exportPsd, exportUnityZip } from "./exports";
+import { exportCocosZip, exportJson, exportPsd, exportUnityZip } from "./exports";
 import { seedreamLayerSplit } from "./seedream";
 import { importPsd } from "./psdImport";
 import SmartSplitWorkspace, {
@@ -24,7 +24,7 @@ import {
   type LocalComfyConfig,
 } from "./localComfy";
 import { runningHubLayerSplit, type RunningHubConfig } from "./runningHub";
-import type { DocumentState, LayerNode, PageState, SceneState } from "./types";
+import type { Artboard, DocumentState, LayerNode, PageState, SceneState, TextLayerStyle } from "./types";
 import {
   assignLayerToArtboard as assignLayerDocumentToArtboard,
   artboardContainingPoint,
@@ -62,6 +62,84 @@ const newPage = (name: string): PageState => ({
   name,
   document: empty(),
 });
+
+const addSplitComparisonArtboard = (
+  current: DocumentState,
+  sourceArtboard: Artboard,
+  sourceLayer: LayerNode,
+  resultLayers: LayerNode[],
+  imageWidth: number,
+  imageHeight: number,
+  ids: { artboard: Artboard; background: string },
+) => {
+  const artboard = ids.artboard;
+  const baseZ = Math.max(-1, ...current.layers.map((layer) => layer.zIndex)) + 1;
+  const scaleX = sourceLayer.width / imageWidth;
+  const scaleY = sourceLayer.height / imageHeight;
+  const offsetX = sourceLayer.x - sourceArtboard.x;
+  const offsetY = sourceLayer.y - sourceArtboard.y;
+  const background: LayerNode = {
+    ...sourceLayer,
+    id: ids.background,
+    name: `${sourceLayer.name} · 原图副本`,
+    parentId: null,
+    artboardId: artboard.id,
+    x: artboard.x + offsetX,
+    y: artboard.y + offsetY,
+    zIndex: baseZ,
+    visible: true,
+    locked: true,
+    boxSelected: false,
+  };
+  const placed = resultLayers.map((layer) => ({
+    ...layer,
+    artboardId: artboard.id,
+    x: artboard.x + offsetX + layer.x * scaleX,
+    y: artboard.y + offsetY + layer.y * scaleY,
+    width: layer.width * scaleX,
+    height: layer.height * scaleY,
+    zIndex: baseZ + 1 + Math.max(0, layer.zIndex),
+  }));
+  const artboards = [...current.artboards, artboard];
+  return {
+    document: {
+      ...current,
+      canvas: documentBounds(artboards),
+      artboards,
+      layers: [...current.layers, background, ...placed],
+    },
+    artboard,
+    placed,
+  };
+};
+
+const comparisonViewport = (
+  sourceArtboard: Artboard,
+  comparisonArtboard: Artboard,
+  viewport: { width: number; height: number },
+) => {
+  const left = Math.min(sourceArtboard.x, comparisonArtboard.x);
+  const top = Math.min(sourceArtboard.y, comparisonArtboard.y);
+  const right = Math.max(
+    sourceArtboard.x + sourceArtboard.width,
+    comparisonArtboard.x + comparisonArtboard.width,
+  );
+  const bottom = Math.max(
+    sourceArtboard.y + sourceArtboard.height,
+    comparisonArtboard.y + comparisonArtboard.height,
+  );
+  const width = right - left;
+  const height = bottom - top;
+  const z = Math.max(
+    0.05,
+    Math.min(1, (viewport.width - 100) / width, (viewport.height - 150) / height),
+  );
+  return {
+    z,
+    x: (viewport.width - width * z) / 2 - left * z,
+    y: (viewport.height - height * z) / 2 - top * z,
+  };
+};
 function useBitmap(source?: string) {
   const [image, setImage] = useState<HTMLImageElement>();
   useEffect(() => {
@@ -180,6 +258,41 @@ function Sprite({
       />
     );
   if (layer.kind === "group") return null;
+  if (layer.kind === "text") {
+    const style = layer.textStyle;
+    return (
+      <KText
+        id={layer.id}
+        x={layer.x}
+        y={layer.y}
+        width={layer.width}
+        height={layer.height}
+        rotation={layer.rotation || 0}
+        opacity={layer.opacity ?? 1}
+        text={layer.textContent || ""}
+        fontFamily={style?.fontFamily || "Arial"}
+        fontSize={style?.fontSize || 24}
+        fontStyle={`${style?.bold ? "bold " : ""}${style?.italic ? "italic" : ""}`.trim() || "normal"}
+        fill={style?.color || "#ffffff"}
+        stroke={style?.strokeColor}
+        strokeWidth={style?.strokeWidth || 0}
+        align={style?.align || "left"}
+        verticalAlign={style?.verticalAlign || "top"}
+        lineHeight={style?.lineHeight || 1.2}
+        letterSpacing={style?.letterSpacing || 0}
+        wrap="word"
+        draggable={!layer.locked}
+        onMouseDown={selectBeforeDrag}
+        onTouchStart={selectBeforeDrag}
+        onClick={select}
+        onDragStart={(e) => { e.cancelBubble = true; }}
+        onDragEnd={(e) => {
+          e.cancelBubble = true;
+          drop(Math.round(e.target.x()), Math.round(e.target.y()));
+        }}
+      />
+    );
+  }
   return (
     <>
       <KImage
@@ -1569,6 +1682,35 @@ export default function App() {
     };
     image.src = selected.source;
   };
+  const appendSplitComparison = (
+    sourceArtboard: Artboard,
+    sourceLayer: LayerNode,
+    resultLayers: LayerNode[],
+    imageWidth: number,
+    imageHeight: number,
+  ) => {
+    const comparisonArtboard: Artboard = {
+      id: uid(),
+      name: `${sourceArtboard.name} · 拆分对比`,
+      ...nextArtboardOrigin(doc.artboards),
+      width: sourceArtboard.width,
+      height: sourceArtboard.height,
+    };
+    setDoc((current) => addSplitComparisonArtboard(
+      current,
+      sourceArtboard,
+      sourceLayer,
+      resultLayers,
+      imageWidth,
+      imageHeight,
+      { artboard: comparisonArtboard, background: uid() },
+    ).document);
+    setSelectedArtboardId(comparisonArtboard.id);
+    setSelectedId(null);
+    setContentSelectionIds([]);
+    setView(comparisonViewport(sourceArtboard, comparisonArtboard, size));
+    return comparisonArtboard;
+  };
   const splitWithSeedream = async (
     targetLayer = doc.layers.find((layer) => layer.kind === "image"),
     boxes?: SmartSplitBox[],
@@ -1611,22 +1753,14 @@ export default function App() {
       const sourceLayer = targetLayer;
       const artboard = artboardForLayer(doc, sourceLayer);
       if (!artboard) throw new Error("源图片没有所属画板，无法放置拆分结果。");
-      const baseZ =
-        Math.max(-1, ...doc.layers.map((layer) => layer.zIndex)) + 1;
-      const placed = layers.map((layer, index) => ({
-        ...layer,
-        name: `AI · ${layer.name}`,
-        artboardId: artboard.id,
-        x: artboard.x + layer.x,
-        y: artboard.y + layer.y,
-        zIndex: baseZ + index,
-      }));
-      setDoc((d) => ({ ...d, layers: [...d.layers, ...placed] }));
-      setSelectedArtboardId(artboard.id);
-      setSelectedId(placed[0].id);
-      setNotice(
-        `已将 ${placed.length} 个 Seedream 图层整理到画板「${artboard.name}」内。`,
+      const comparison = appendSplitComparison(
+        artboard,
+        sourceLayer,
+        layers,
+        imageWidth,
+        imageHeight,
       );
+      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length} 个 Seedream 返回图层已放入其中；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(
@@ -1658,31 +1792,17 @@ export default function App() {
           targetLayer.assetWidth || targetLayer.width || doc.canvas.width,
         imageHeight =
           targetLayer.assetHeight || targetLayer.height || doc.canvas.height;
-      const layers = await localComfyLayerSplit(source, splitBoxes, config);
+      const layers = await localComfyLayerSplit(source, splitBoxes, config, boxes);
       const artboard = artboardForLayer(doc, targetLayer);
       if (!artboard) throw new Error("源图片没有所属画板，无法放置本地拆分结果。");
-      const scaleX = targetLayer.width / imageWidth;
-      const scaleY = targetLayer.height / imageHeight;
-      const baseZ =
-        Math.max(-1, ...doc.layers.map((layer) => layer.zIndex)) + 1;
-      const placed = layers.map((layer, index) => ({
-        ...layer,
-        artboardId: artboard.id,
-        x: targetLayer.x + layer.x * scaleX,
-        y: targetLayer.y + layer.y * scaleY,
-        width: layer.width * scaleX,
-        height: layer.height * scaleY,
-        zIndex: baseZ + index,
-      }));
-      setDoc((current) => ({
-        ...current,
-        layers: [...current.layers, ...placed],
-      }));
-      setSelectedArtboardId(artboard.id);
-      setSelectedId(placed[0]?.id ?? null);
-      setNotice(
-        `已将 ${placed.length} 个本地拆分图层按原框位置等比放回画板「${artboard.name}」。`,
+      const comparison = appendSplitComparison(
+        artboard,
+        targetLayer,
+        layers,
+        imageWidth,
+        imageHeight,
       );
+      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length} 个本地拆分图层已放入其中；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "ComfyUI 本地拆分失败。");
@@ -1710,25 +1830,19 @@ export default function App() {
     try {
       const imageWidth = targetLayer.assetWidth || targetLayer.width || doc.canvas.width;
       const imageHeight = targetLayer.assetHeight || targetLayer.height || doc.canvas.height;
-      const layers = await runningHubLayerSplit(source, splitBoxes, config);
+      const layers = await runningHubLayerSplit(source, splitBoxes, config, boxes);
       const artboard = artboardForLayer(doc, targetLayer);
       if (!artboard) throw new Error("源图片没有所属画板，无法放置 RunningHub 拆分结果。");
-      const scaleX = targetLayer.width / imageWidth;
-      const scaleY = targetLayer.height / imageHeight;
-      const baseZ = Math.max(-1, ...doc.layers.map((layer) => layer.zIndex)) + 1;
-      const placed = layers.map((layer, index) => ({
-        ...layer,
-        artboardId: artboard.id,
-        x: targetLayer.x + layer.x * scaleX,
-        y: targetLayer.y + layer.y * scaleY,
-        width: layer.width * scaleX,
-        height: layer.height * scaleY,
-        zIndex: baseZ + index,
-      }));
-      setDoc((current) => ({ ...current, layers: [...current.layers, ...placed] }));
-      setSelectedArtboardId(artboard.id);
-      setSelectedId(placed[0]?.id ?? null);
-      setNotice(`已将 ${placed.length} 个 RunningHub 拆分图层按原框位置等比放回画板「${artboard.name}」。`);
+      const comparison = appendSplitComparison(
+        artboard,
+        targetLayer,
+        layers,
+        imageWidth,
+        imageHeight,
+      );
+      const imageCount = layers.filter((layer) => layer.kind === "image").length;
+      const groupCount = layers.filter((layer) => layer.kind === "group").length;
+      setNotice(`已在右侧新建画板「${comparison.name}」，${imageCount} 个 RunningHub 图层已放入其中${groupCount ? `，包含 ${groupCount} 个重叠框组` : ""}；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "RunningHub 工作流拆分失败。");
@@ -2812,7 +2926,9 @@ export default function App() {
                 ? "◇"
                 : layer.kind === "group"
                   ? "▦"
-                  : "▣"}
+                  : layer.kind === "text"
+                    ? "T"
+                    : "▣"}
             </span>
             <span className="layer-name">{layer.name}</span>
             <span
@@ -3031,6 +3147,12 @@ export default function App() {
           >
             {exportGroupId ? "组 Unity 包" : "画板 Unity 包"}
           </button>
+          <button
+            disabled={!activeArtboard}
+            onClick={() => exportCocosZip(doc, activeArtboard?.id, exportGroupId)}
+          >
+            {exportGroupId ? "组 Cocos 包" : "画板 Cocos 包"}
+          </button>
         </div>
       </header>
       <input
@@ -3136,7 +3258,7 @@ export default function App() {
                     key={`group-frame-${group.id}`}
                     group={group}
                     children={descendants(group.id).filter(
-                      (layer) => layer.kind === "image",
+                      (layer) => layer.kind === "image" || layer.kind === "text",
                     )}
                     selected={group.id === selectedId}
                     viewScale={view.z}
@@ -3267,6 +3389,55 @@ export default function App() {
                     </label>
                   </div>
                 </section>
+                {selected.kind === "text" && (
+                  <section className="text-layer-properties">
+                    <h4>原生文字</h4>
+                    <label>
+                      文字内容
+                      <textarea
+                        className="text-content-editor"
+                        value={selected.textContent || ""}
+                        onChange={(event) => patch(selected.id, { textContent: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      字体族
+                      <input
+                        value={selected.textStyle?.fontFamily || "Arial"}
+                        onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, fontFamily: event.target.value } })}
+                      />
+                    </label>
+                    <div className="property-grid">
+                      <label>
+                        字号
+                        <input type="number" min="1" value={selected.textStyle?.fontSize || 24} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, fontSize: Math.max(1, Number(event.target.value) || 1) } })} />
+                      </label>
+                      <label>
+                        行高比例
+                        <input type="number" min="0.5" step="0.1" value={selected.textStyle?.lineHeight || 1.2} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, lineHeight: Math.max(0.5, Number(event.target.value) || 0.5) } })} />
+                      </label>
+                      <label>
+                        字间距
+                        <input type="number" step="0.5" value={selected.textStyle?.letterSpacing || 0} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, letterSpacing: Number(event.target.value) || 0 } })} />
+                      </label>
+                      <label>
+                        水平对齐
+                        <select value={selected.textStyle?.align || "left"} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, align: event.target.value as TextLayerStyle["align"] } })}>
+                          <option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="text-style-toggles">
+                      <label><input type="checkbox" checked={selected.textStyle?.bold || false} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, bold: event.target.checked } })} /> 粗体</label>
+                      <label><input type="checkbox" checked={selected.textStyle?.italic || false} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, italic: event.target.checked } })} /> 斜体</label>
+                    </div>
+                    <div className="text-color-row">
+                      <label>文字色<input type="color" value={selected.textStyle?.color || "#ffffff"} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, color: event.target.value } })} /></label>
+                      <label>描边色<input type="color" value={selected.textStyle?.strokeColor || "#000000"} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, strokeColor: event.target.value } })} /></label>
+                      <label>描边宽<input type="number" min="0" step="0.5" value={selected.textStyle?.strokeWidth || 0} onChange={(event) => patch(selected.id, { textStyle: { ...selected.textStyle, strokeWidth: Math.max(0, Number(event.target.value) || 0) } })} /></label>
+                    </div>
+                  </section>
+                )}
                 <details>
                   <summary>
                     自动布局 <span>＋</span>

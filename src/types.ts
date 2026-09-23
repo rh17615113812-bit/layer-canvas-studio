@@ -1,4 +1,19 @@
-export type LayerKind = 'image' | 'group' | 'selection';
+export type LayerKind = 'image' | 'text' | 'group' | 'selection';
+
+/** Portable typography shared by the canvas, PSD, Cocos Creator, and Unity exporters. */
+export type TextLayerStyle = {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold?: boolean;
+  italic?: boolean;
+  align?: 'left' | 'center' | 'right';
+  verticalAlign?: 'top' | 'middle' | 'bottom';
+  lineHeight?: number;
+  letterSpacing?: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+};
 
 export type LayerNode = {
   id: string;
@@ -20,6 +35,9 @@ export type LayerNode = {
   fill?: string;
   note?: string;
   source?: string;
+  /** Editable Unicode text and portable native text styling. */
+  textContent?: string;
+  textStyle?: Partial<TextLayerStyle>;
   /** 原始 PNG/JPEG 像素尺寸；布局 width/height 是画布中的显示尺寸。 */
   assetWidth?: number;
   assetHeight?: number;

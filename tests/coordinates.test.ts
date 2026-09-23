@@ -5,6 +5,8 @@ import { placeAssetInComposite } from '../src/seedream.ts';
 import { assignLayerToArtboard, artboardContainingPoint, createArtboardDocument, createGroupDocument, layerToArtboardCoordinates, nextArtboardOrigin, removeArtboard, resizeArtboard, translateArtboard } from '../src/artboards.ts';
 import { assignLayerBatchToArtboard, rangeLayerSelection, removeLayerBatch, reorderLayerBatch, rootMovingLayerIds, toggleLayerSelection } from '../src/layerOrder.ts';
 import { fitLocalAssetToBox } from '../src/localComfy.ts';
+import { getOverlapMasksForBox, orderBoxesByDefaultStacking, reorderGroupMembers, zIndexForFrontToBackIndex } from '../src/boxOverlap.ts';
+import { normalizeOcrRegions } from '../src/coordinates.ts';
 
 assert.deepEqual(pixelToNormalizedBBox([0, 0, 100, 200], 100, 200), [0, 0, 999, 999]);
 assert.deepEqual(normalizedToPixelBBox([0, 0, 999, 999], 100, 200), [0, 0, 99.9, 199.8]);
@@ -13,6 +15,20 @@ const source: [number, number, number, number] = [12, 24, 780, 460];
 const roundTrip = normalizedToPixelBBox(pixelToNormalizedBBox(source, 800, 500), 800, 500);
 assert.ok(Math.max(...source.map((value, index) => Math.abs(value - roundTrip[index]))) <= 1);
 console.log('coordinate tests passed');
+
+const ocrRegions = normalizeOcrRegions([
+  { text: '按钮文字', bbox: [100, 200, 500, 600], style: { font_family: 'Noto Sans SC', font_size: 18, color: '#abc', align: 'center', stroke_width: 2 } },
+  { text: '', bbox: [0, 0, 10, 10] },
+  { text: 'invalid', bbox: [0, 1] },
+], 100, 50, 'normalized_0_999');
+assert.equal(ocrRegions.length, 1);
+assert.deepEqual(ocrRegions[0].bbox, [10, 10, 50, 30]);
+assert.equal(ocrRegions[0].text, '按钮文字');
+assert.equal(ocrRegions[0].style.fontFamily, 'Noto Sans SC');
+assert.equal(ocrRegions[0].style.fontSize, 18);
+assert.equal(ocrRegions[0].style.align, 'center');
+assert.equal(ocrRegions[0].style.strokeWidth, 2);
+console.log('OCR coordinate and style normalization tests passed');
 assert.match(DEFAULT_VISION_INSTRUCTION, /UI/);
 assert.deepEqual(selectSplittableBoxes([{ type: 'ui' }, { type: 'ui', shouldSplit: false }, { type: 'text', shouldSplit: true }]), [{ type: 'ui' }]);
 console.log('smart split routing tests passed');
@@ -144,3 +160,27 @@ assert.deepEqual(fitLocalAssetToBox({ width: 800, height: 400 }, [100, 200, 300,
 assert.deepEqual(fitLocalAssetToBox({ width: 400, height: 800 }, [100, 200, 300, 400]), { x: 150, y: 200, width: 100, height: 200 });
 assert.deepEqual(fitLocalAssetToBox({ width: 2048, height: 1024 }, [10, 20, 1010, 520]), { x: 10, y: 20, width: 1000, height: 500 });
 console.log('local ComfyUI placement tests passed');
+
+const overlapBoxes = [
+  { id: 'front', bbox: [5, 5, 15, 15] as [number, number, number, number] },
+  { id: 'back', bbox: [0, 0, 20, 20] as [number, number, number, number] },
+];
+const areaSorted = orderBoxesByDefaultStacking([
+  { id: 'large', bbox: [0, 0, 20, 20] as [number, number, number, number] },
+  { id: 'small', bbox: [5, 5, 15, 15] as [number, number, number, number] },
+]);
+assert.deepEqual(areaSorted.map(box => box.id), ['small', 'large']);
+assert.deepEqual(getOverlapMasksForBox(areaSorted, 0), []);
+assert.deepEqual(getOverlapMasksForBox(areaSorted, 1), [[5, 5, 15, 15]]);
+assert.equal(zIndexForFrontToBackIndex(areaSorted.length, 0), 1);
+assert.equal(zIndexForFrontToBackIndex(areaSorted.length, 1), 0);
+assert.deepEqual(getOverlapMasksForBox(overlapBoxes, 0), []);
+assert.deepEqual(getOverlapMasksForBox(overlapBoxes, 1), [[5, 5, 15, 15]]);
+assert.deepEqual(getOverlapMasksForBox([
+  { id: 'front', bbox: [0, 0, 10, 10] as [number, number, number, number] },
+  { id: 'back', bbox: [5, 5, 15, 15] as [number, number, number, number] },
+], 1), [[5, 5, 10, 10]]);
+assert.deepEqual(reorderGroupMembers(['one', 'two', 'three'], 'three', 'one', 'before'), ['three', 'one', 'two']);
+assert.deepEqual(reorderGroupMembers(['one', 'two', 'three'], 'one', 'three', 'after'), ['two', 'three', 'one']);
+assert.deepEqual(reorderGroupMembers(['one', 'two'], 'one', 'outside', 'after'), ['one', 'two']);
+console.log('overlap mask order tests passed');
