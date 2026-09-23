@@ -23,3 +23,22 @@ main:has(.inspector-empty){grid-template-columns:250px minmax(0,1fr)}.inspector:
 /* 拆分方式固定在左侧，内容区保持紧凑，窄屏时退回顶部横排。 */
 .smart-split-panel{width:min(820px,calc(100vw - 32px));padding:0;overflow:visible}.smart-split-panel-layout{display:grid;grid-template-columns:132px minmax(0,1fr);min-height:158px}.smart-split-mode-tabs{display:flex;flex-direction:column;gap:6px;margin:0;padding:12px 10px;border:0;border-right:1px solid #31402f;border-radius:14px 0 0 14px;background:#101510}.smart-split-mode-tabs button{flex:0 0 auto;padding:10px 8px;text-align:left}.smart-split-panel-content{min-width:0;padding:12px 18px 13px}.smart-split-config-note{grid-column:1/-1!important;margin:0!important;color:#9dac99!important;line-height:1.5}.smart-split-panel .smart-split-layer-list{max-height:190px}.smart-split-panel .smart-split-footer{margin-top:5px}
 @media(max-width:720px){.smart-split-panel-layout{grid-template-columns:1fr}.smart-split-mode-tabs{flex-direction:row;padding:8px;border-right:0;border-bottom:1px solid #31402f;border-radius:14px 14px 0 0}.smart-split-mode-tabs button{flex:1;text-align:center;padding:8px 4px;font-size:11px}.smart-split-panel-content{padding:11px 13px}.smart-split-local-settings{grid-template-columns:1fr}.smart-split-config-dialog{max-height:calc(100vh - 28px);overflow:auto}}
+
+/* 框内仍可从图片上画新框；只有标题、关闭按钮和缩放点接收指针事件。 */
+.smart-split-boxes,.smart-split-box{pointer-events:none}
+.smart-split-box{cursor:crosshair}
+.smart-split-box.is-selected{border-color:#fff000;background:#fff0001c;outline:none;box-shadow:0 0 4px 1px #fff000,0 0 10px 3px #ffc80088}
+.smart-split-box>b{pointer-events:auto;cursor:move;touch-action:none}
+.smart-split-resize{width:6px;height:6px;pointer-events:auto}
+.handle-nw{left:-3px;top:-3px}
+.handle-n{left:calc(50% - 3px);top:-3px}
+.handle-ne{right:-3px;top:-3px}
+.handle-e{right:-3px;top:calc(50% - 3px)}
+.handle-se{right:-3px;bottom:-3px}
+.handle-s{left:calc(50% - 3px);bottom:-3px}
+.handle-sw{left:-3px;bottom:-3px}
+.handle-w{left:-3px;top:calc(50% - 3px)}
+.handle-nw,.handle-se{cursor:nwse-resize}
+.handle-ne,.handle-sw{cursor:nesw-resize}
+.handle-n,.handle-s{cursor:ns-resize}
+.handle-e,.handle-w{cursor:ew-resize}

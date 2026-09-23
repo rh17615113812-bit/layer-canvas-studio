@@ -1812,6 +1812,7 @@ export default function App() {
     const onHistoryKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z")
         return;
+      if (smartSplitOpen) return;
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, select, [contenteditable="true"]'))
         return;
@@ -1820,7 +1821,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onHistoryKey);
     return () => window.removeEventListener("keydown", onHistoryKey);
-  }, [scene.id, page.id, doc]);
+  }, [scene.id, page.id, doc, smartSplitOpen]);
   useEffect(() => {
     const rows = Array.from(
       document.querySelectorAll<HTMLElement>(".tree .layer-row"),
