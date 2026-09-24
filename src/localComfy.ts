@@ -1,12 +1,16 @@
 import type { SmartSplitBox } from './SmartSplitWorkspace';
 import type { LayerNode } from './types';
-import { getOverlapMasksForBox } from './boxOverlap';
+import { getOverlapMasksForBox } from './boxOverlap.ts';
+import type { WorkflowPromptOverride } from './backgroundPrompt';
 
 export type LocalComfyConfig = {
   comfyUrl: string;
   workflow?: Record<string, unknown>;
   inputNodeId?: string;
   outputNodeIds?: string[];
+  backgroundPromptNodeId?: string;
+  backgroundPromptFieldName?: string;
+  backgroundPrompt?: string;
 };
 
 type Size = { width: number; height: number };
@@ -80,9 +84,53 @@ export async function localComfyLayerSplit(
   groupingBoxes: SmartSplitBox[] = boxes,
 ): Promise<LayerNode[]> {
   if (!boxes.length) throw new Error('本地拆分需要先手动框选或使用 AI 自动框选。');
+  const promptNodeId = config.backgroundPromptNodeId?.trim() || '';
+  const promptFieldName = config.backgroundPromptFieldName?.trim() || 'text';
+  const prompt = config.backgroundPrompt?.trim() || '';
+  if (!promptNodeId) throw new Error('请在本地拆分配置中填写背景提示词节点 ID。');
+  if (!prompt) throw new Error('背景分离提示词不能为空。');
+  const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
   const image = await loadImage(source);
   const results: LayerNode[] = [];
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
+
+  const backgroundResponse = await fetch('http://127.0.0.1:8787/api/comfyui/layer-split', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      image: source,
+      comfyUrl: config.comfyUrl,
+      workflow: config.workflow,
+      inputNodeId: config.inputNodeId,
+      outputNodeIds: config.outputNodeIds,
+      promptOverride,
+    }),
+  });
+  const backgroundBody = await backgroundResponse.json().catch(() => ({}));
+  if (!backgroundResponse.ok) throw new Error(backgroundBody.error || 'ComfyUI 背景分离工作流失败。');
+  const backgroundItem = Array.isArray(backgroundBody.images) ? backgroundBody.images[0] : undefined;
+  const backgroundSource = backgroundItem?.base64
+    ? `data:${backgroundItem.mime || 'image/png'};base64,${backgroundItem.base64}`
+    : backgroundItem?.url;
+  if (!backgroundSource) throw new Error('ComfyUI 背景分离工作流没有返回图片。');
+  const backgroundAsset = await dimensions(backgroundSource);
+  results.push({
+    id: crypto.randomUUID().replaceAll('-', ''),
+    name: '背景 · ComfyUI 整图分离',
+    kind: 'image',
+    parentId: null,
+    x: 0,
+    y: 0,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    zIndex: 0,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    source: backgroundSource,
+    assetWidth: backgroundAsset.width,
+    assetHeight: backgroundAsset.height,
+  });
 
   // Run one crop at a time. A ComfyUI result has no placement metadata, so every
   // returned bitmap is fitted back into the exact box that produced its crop.
@@ -118,7 +166,7 @@ export async function localComfyLayerSplit(
       y: placement.y,
       width: placement.width,
       height: placement.height,
-      zIndex: Math.max(0, groupingBoxes.length - 1 - groupingIndex),
+      zIndex: Math.max(1, groupingBoxes.length - groupingIndex),
       visible: true,
       locked: false,
       opacity: 1,
@@ -127,5 +175,6 @@ export async function localComfyLayerSplit(
       assetHeight: asset.height,
     });
   }
+
   return results;
 }

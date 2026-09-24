@@ -7,6 +7,58 @@ import { assignLayerBatchToArtboard, rangeLayerSelection, removeLayerBatch, reor
 import { fitLocalAssetToBox } from '../src/localComfy.ts';
 import { getOverlapMasksForBox, orderBoxesByDefaultStacking, reorderGroupMembers, zIndexForFrontToBackIndex } from '../src/boxOverlap.ts';
 import { normalizeOcrRegions } from '../src/coordinates.ts';
+import { buildEngineLayout, hasInterleavedGroups, orderedEngineLayers } from '../src/engineExportModel.ts';
+import { buildEngineFiles, godotScene } from '../src/engineExports.ts';
+
+const engineFixture = buildEngineLayout({
+  version: '1.0', canvas: { width: 900, height: 700 },
+  artboards: [{ id: 'a', name: 'UI', x: 200, y: 100, width: 400, height: 300 }],
+  layers: [
+    { id: 'child', name: 'Icon', kind: 'image', parentId: 'group', artboardId: 'a', x: 240, y: 145, width: 40, height: 50, zIndex: 2, visible: true, locked: false, rotation: 15, opacity: 0.5, source: 'data:image/png;base64,AAAA' },
+    { id: 'group', name: 'Panel', kind: 'group', parentId: null, artboardId: 'a', x: 220, y: 130, width: 100, height: 100, zIndex: 1, visible: true, locked: false },
+  ],
+}, 'a');
+assert.deepEqual(orderedEngineLayers(engineFixture.layout).map(layer => layer.id), ['group', 'child']);
+assert.equal(hasInterleavedGroups(engineFixture.layout), false);
+assert.equal(hasInterleavedGroups({ ...engineFixture.layout, layers: [
+  ...engineFixture.layout.layers,
+  { ...engineFixture.layout.layers[0], id: 'other-child', zIndex: 4 },
+  { ...engineFixture.layout.layers[0], id: 'outside', parentId: null, zIndex: 3 },
+] }), true);
+assert.deepEqual(engineFixture.layout.layers[0], {
+  id: 'child', name: 'Icon', kind: 'image', parentId: 'group', x: 40, y: 45, width: 40, height: 50,
+  zIndex: 2, visible: true, rotation: 15, opacity: 0.5, locked: false, asset: 'images/child.png',
+});
+console.log('engine export layout hierarchy and coordinates passed');
+const editableTextLayout = buildEngineLayout({
+  ...engineFixture.output,
+  layers: [...engineFixture.output.layers, {
+    ...engineFixture.output.layers[0], id: 'title', name: '标题', kind: 'text', source: undefined,
+    parentId: null, zIndex: 3, textContent: '可编辑文字',
+    textStyle: { fontFamily: 'Noto Sans SC', fontSize: 32, color: '#112233', bold: true, align: 'center', lineHeight: 1.4 },
+  }],
+}).layout;
+assert.equal(editableTextLayout.layers.find(layer => layer.id === 'title')?.asset, undefined);
+const godotTextScene = godotScene(editableTextLayout);
+assert.match(godotTextScene, /type="Label"/);
+assert.match(godotTextScene, /text = "可编辑文字"/);
+assert.match(godotTextScene, /font_names = PackedStringArray\("Noto Sans SC"\)/);
+assert.doesNotMatch(godotTextScene, /images\/title\.png/);
+console.log('native editable Godot text export passed');
+const textOnlyDocument = { ...engineFixture.output, layers: engineFixture.output.layers.filter(layer => layer.id !== 'child').concat({
+  ...engineFixture.output.layers[0], id: 'title', name: '标题', kind: 'text' as const,
+  parentId: 'group', source: undefined, textContent: '可编辑文字', textStyle: { fontFamily: 'Noto Sans SC', fontSize: 32, color: '#112233' },
+}) };
+for (const engine of ['unity', 'cocos', 'godot'] as const) {
+  const { files } = await buildEngineFiles(textOnlyDocument, engine);
+  assert.equal(Object.keys(files).some(path => path.endsWith('title.png')), false);
+  assert.equal(Object.keys(files).some(path => path.startsWith('images/')), false);
+  assert.match(new TextDecoder().decode(files['layout.json']), /可编辑文字/);
+  if (engine === 'godot') assert.match(new TextDecoder().decode(Object.entries(files).find(([path]) => path.endsWith('.tscn'))![1]), /type="Label"/);
+  if (engine === 'unity') assert.match(new TextDecoder().decode(Object.entries(files).find(([path]) => path.endsWith('.cs'))![1]), /AddComponent<Text>/);
+  if (engine === 'cocos') assert.match(new TextDecoder().decode(Object.entries(files).find(([path]) => path.endsWith('.ts'))![1]), /addComponent\(Label\)/);
+}
+console.log('all engine packages retain editable text without PNG passed');
 
 assert.deepEqual(pixelToNormalizedBBox([0, 0, 100, 200], 100, 200), [0, 0, 999, 999]);
 assert.deepEqual(normalizedToPixelBBox([0, 0, 999, 999], 100, 200), [0, 0, 99.9, 199.8]);

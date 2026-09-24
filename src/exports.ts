@@ -1,5 +1,4 @@
-import { writePsd } from 'ag-psd';
-import { strToU8, zipSync } from 'fflate';
+import { readPsd, writePsd } from 'ag-psd';
 import type { DocumentState, LayerNode, TextLayerStyle } from './types';
 import { createArtboardDocument, createGroupDocument, layerToArtboardCoordinates } from './artboards';
 
@@ -131,12 +130,69 @@ const dataUrlBytes = (dataUrl: string) => {
 const createExportDocument = (document: DocumentState, artboardId?: string, groupId?: string) =>
   groupId ? createGroupDocument(document, groupId) : createArtboardDocument(document, artboardId);
 
+export type PsdExportOptions = { fileName?: string; rasterizeText?: boolean; rebuildTextOnOpen?: boolean };
+
+export const psdFileName = (value: string) => {
+  const name = value.replace(/\.psd$/i, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 120);
+  return `${name || 'untitled'}.psd`;
+};
+
+export const psdExportInfo = (document: DocumentState, artboardId?: string, groupId?: string) => {
+  const output = createExportDocument(document, artboardId, groupId);
+  const artboard = output.artboards[0];
+  return {
+    name: artboard.name,
+    width: Math.max(1, Math.round(artboard.width)),
+    height: Math.max(1, Math.round(artboard.height)),
+    imageCount: output.layers.filter(layer => layer.kind === 'image' && layer.source).length,
+    textCount: output.layers.filter(layer => layer.kind === 'text').length,
+  };
+};
+
+type CompositeItem = { sourceLayer: LayerNode; displayCanvas: HTMLCanvasElement; left: number; top: number; width: number; height: number };
+
+const composePsdCanvas = (output: DocumentState, items: CompositeItem[], width: number, height: number) => {
+  const byId = new Map(output.layers.map(layer => [layer.id, layer]));
+  const composite = globalThis.document.createElement('canvas');
+  composite.width = width; composite.height = height;
+  const context = composite.getContext('2d')!;
+  [...items].sort((a, b) => a.sourceLayer.zIndex - b.sourceLayer.zIndex).forEach(item => {
+    let opacity = 1;
+    let current: LayerNode | undefined = item.sourceLayer;
+    while (current) {
+      if (!current.visible) return;
+      opacity *= current.opacity ?? 1;
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    if (!opacity) return;
+    context.save();
+    context.globalAlpha = Math.max(0, Math.min(1, opacity));
+    context.translate(item.left, item.top);
+    context.rotate(((item.sourceLayer.rotation ?? 0) * Math.PI) / 180);
+    context.drawImage(item.displayCanvas, 0, 0, item.width, item.height);
+    context.restore();
+  });
+  return composite;
+};
+
+export const renderPsdPreview = async (document: DocumentState, artboardId?: string, groupId?: string) => {
+  const output = createExportDocument(document, artboardId, groupId);
+  const artboard = output.artboards[0];
+  const items = await Promise.all(output.layers.filter(layer => layer.kind === 'text' || layer.kind === 'image' && layer.source).map(async layer => {
+    const local = layerToArtboardCoordinates(layer, artboard);
+    const width = Math.max(1, Math.round(layer.width)), height = Math.max(1, Math.round(layer.height));
+    const displayCanvas = layer.kind === 'text' ? renderTextCanvas(layer, width, height) : toDisplayCanvas(trimFullCanvasTransparency(await toCanvas(layer.source!), width, height), width, height);
+    return { sourceLayer: layer, displayCanvas, left: Math.round(local.x), top: Math.round(local.y), width, height };
+  }));
+  return composePsdCanvas(output, items, Math.max(1, Math.round(artboard.width)), Math.max(1, Math.round(artboard.height))).toDataURL('image/png');
+};
+
 export const exportJson = (document: DocumentState, artboardId?: string, groupId?: string) => {
   const output = createExportDocument(document, artboardId, groupId);
   download(`${safeName(output.artboards[0].name)}-layout.json`, new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' }));
 };
 
-export const exportPsd = async (document: DocumentState, artboardId?: string, groupId?: string) => {
+export const createPsd = async (document: DocumentState, artboardId?: string, groupId?: string, options: PsdExportOptions = {}) => {
   const output = createExportDocument(document, artboardId, groupId);
   const artboard = output.artboards[0];
   if (!artboard) throw new Error('当前 Page 中没有可导出的画板。');
@@ -191,7 +247,7 @@ export const exportPsd = async (document: DocumentState, artboardId?: string, gr
       hidden: !layer.visible,
       opacity: Math.round((layer.opacity ?? 1) * 255),
       canvas,
-      text: {
+      ...(!options.rasterizeText ? { text: {
         text: layer.textContent || '',
         transform: [1, 0, 0, 1, left, top],
         left, top, right: left + width, bottom: top + height,
@@ -209,38 +265,13 @@ export const exportPsd = async (document: DocumentState, artboardId?: string, gr
           outlineWidth: style.strokeWidth || 0,
         },
         paragraphStyle: { justification: style.align || 'left' },
-      },
+      } } : {}),
     };
     return { sourceLayer: layer, displayCanvas: canvas, left, top, width, height, layer: psdLayer };
   });
-  const byId = new Map(output.layers.map(layer => [layer.id, layer]));
-  const renderedOpacity = (layer: LayerNode) => {
-    let opacity = 1;
-    let current: LayerNode | undefined = layer;
-    while (current) {
-      if (!current.visible) return 0;
-      opacity *= current.opacity ?? 1;
-      current = current.parentId ? byId.get(current.parentId) : undefined;
-    }
-    return Math.max(0, Math.min(1, opacity));
-  };
   // PSD readers and Windows Explorer use the document composite/thumbnail instead of
   // rebuilding every layer. Without this canvas ag-psd writes an empty black composite.
-  const composite = globalThis.document.createElement('canvas');
-  composite.width = exportWidth;
-  composite.height = exportHeight;
-  const compositeContext = composite.getContext('2d')!;
-  const compositeItems = [...prepared, ...preparedText].sort((a, b) => a.sourceLayer.zIndex - b.sourceLayer.zIndex);
-  compositeItems.forEach(item => {
-    const opacity = renderedOpacity(item.sourceLayer);
-    if (!opacity) return;
-    compositeContext.save();
-    compositeContext.globalAlpha = opacity;
-    compositeContext.translate(item.left, item.top);
-    compositeContext.rotate(((item.sourceLayer.rotation ?? 0) * Math.PI) / 180);
-    compositeContext.drawImage(item.displayCanvas, 0, 0, item.width, item.height);
-    compositeContext.restore();
-  });
+  const composite = composePsdCanvas(output, [...prepared, ...preparedText], exportWidth, exportHeight);
   const thumbnailScale = Math.min(160 / exportWidth, 160 / exportHeight, 1);
   const thumbnail = globalThis.document.createElement('canvas');
   thumbnail.width = Math.max(1, Math.round(exportWidth * thumbnailScale));
@@ -276,127 +307,25 @@ export const exportPsd = async (document: DocumentState, artboardId?: string, gr
     imageResources: { thumbnail },
     children: createChildren(null),
     linkedFiles: prepared.map(item => item.linkedFile),
-  } as never, { invalidateTextLayers: true });
-  download(`${safeName(artboard.name)}.psd`, new Blob([bytes], { type: 'application/octet-stream' }));
+  } as never, { invalidateTextLayers: !options.rasterizeText && options.rebuildTextOnOpen !== false });
+  return bytes;
 };
 
-const unityImporter = `
-using UnityEditor;
-using UnityEngine;
-using UnityEngine.UI;
-
-public static class LayerCanvasImporter {
-  [MenuItem("Tools/Layer Canvas/Import selected layout")]
-  public static void Import() {
-    var layout = Selection.activeObject as TextAsset;
-    if (layout == null) { Debug.LogError("Select layout.json first."); return; }
-    var root = new GameObject("Imported UI", typeof(RectTransform));
-    var canvas = root.AddComponent<Canvas>(); canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-    foreach (var item in JsonUtility.FromJson<Layout>(layout.text).layers) {
-      if (item.kind != "image" && item.kind != "text") continue;
-      var go = new GameObject(item.name, typeof(RectTransform));
-      go.transform.SetParent(root.transform, false);
-      var rect = go.GetComponent<RectTransform>();
-      rect.anchorMin = new Vector2(0, 1); rect.anchorMax = new Vector2(0, 1); rect.pivot = new Vector2(0, 1);
-      rect.anchoredPosition = new Vector2(item.x, -item.y); rect.sizeDelta = new Vector2(item.width, item.height);
-      if (item.kind == "text") {
-        var label = go.AddComponent<Text>();
-        var style = item.textStyle ?? new TextStyle();
-        label.text = item.textContent ?? "";
-        label.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-        if (!string.IsNullOrEmpty(style.fontFamily)) {
-          var font = Resources.Load<Font>(style.fontFamily);
-          if (font != null) label.font = font;
-        }
-        label.fontSize = Mathf.Max(1, Mathf.RoundToInt(style.fontSize > 0 ? style.fontSize : 24));
-        label.fontStyle = style.bold && style.italic ? FontStyle.BoldAndItalic : style.bold ? FontStyle.Bold : style.italic ? FontStyle.Italic : FontStyle.Normal;
-        label.color = ParseColor(style.color, Color.white);
-        var horizontal = style.align == "center" ? "center" : style.align == "right" ? "right" : "left";
-        var vertical = style.verticalAlign == "top" ? "top" : style.verticalAlign == "bottom" ? "bottom" : "middle";
-        label.alignment = vertical == "top" ? (horizontal == "center" ? TextAnchor.UpperCenter : horizontal == "right" ? TextAnchor.UpperRight : TextAnchor.UpperLeft) : vertical == "bottom" ? (horizontal == "center" ? TextAnchor.LowerCenter : horizontal == "right" ? TextAnchor.LowerRight : TextAnchor.LowerLeft) : (horizontal == "center" ? TextAnchor.MiddleCenter : horizontal == "right" ? TextAnchor.MiddleRight : TextAnchor.MiddleLeft);
-        label.lineSpacing = style.lineHeight > 0 ? style.lineHeight : 1.2f;
-        label.horizontalOverflow = HorizontalWrapMode.Wrap;
-        label.verticalOverflow = VerticalWrapMode.Overflow;
-        if (style.strokeWidth > 0) {
-          var outline = go.AddComponent<Outline>();
-          outline.effectColor = ParseColor(style.strokeColor, Color.black);
-          outline.effectDistance = new Vector2(style.strokeWidth, -style.strokeWidth);
-        }
-      } else go.AddComponent<Image>();
-      go.transform.SetSiblingIndex(Mathf.Max(0, item.zIndex));
-    }
-  }
-  static Color ParseColor(string value, Color fallback) { if (ColorUtility.TryParseHtmlString(value, out var color)) return color; return fallback; }
-  [System.Serializable] public class TextStyle { public string fontFamily, color, align, verticalAlign, strokeColor; public float fontSize, lineHeight, letterSpacing, strokeWidth; public bool bold, italic; }
-  [System.Serializable] public class Layer { public string id, name, kind, textContent; public float x, y, width, height; public int zIndex; public TextStyle textStyle; }
-  [System.Serializable] public class Layout { public Layer[] layers; }
-}`;
-
-const cocosImporter = `import { Color, Label, Node, UITransform } from 'cc';
-
-type TextStyle = {
-  fontFamily?: string; fontSize?: number; color?: string; bold?: boolean; italic?: boolean;
-  align?: 'left' | 'center' | 'right'; verticalAlign?: 'top' | 'middle' | 'bottom';
-  lineHeight?: number; letterSpacing?: number; strokeColor?: string; strokeWidth?: number;
-};
-type TextLayer = { name: string; x: number; y: number; width: number; height: number; textContent?: string; textStyle?: TextStyle };
-
-/** Cocos Creator 3.x helper: call createText for each kind:"text" item in layout.json. */
-export class LayerCanvasImporter {
-  static createText(item: TextLayer, parent: Node): Node {
-    const style = item.textStyle ?? {};
-    const node = new Node(item.name || 'Text');
-    node.layer = parent.layer;
-    node.setParent(parent);
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(item.width, item.height);
-    transform.setAnchorPoint(0, 1);
-    node.setPosition(item.x, -item.y, 0);
-    const label = node.addComponent(Label);
-    label.string = item.textContent ?? '';
-    label.useSystemFont = true;
-    label.fontFamily = style.fontFamily || 'Arial';
-    label.fontSize = Math.max(1, Math.round(style.fontSize || 24));
-    label.lineHeight = Math.round(label.fontSize * (style.lineHeight || 1.2));
-    label.spacingX = style.letterSpacing || 0;
-    label.isBold = !!style.bold;
-    label.isItalic = !!style.italic;
-    label.horizontalAlign = style.align === 'center' ? Label.HorizontalAlign.CENTER : style.align === 'right' ? Label.HorizontalAlign.RIGHT : Label.HorizontalAlign.LEFT;
-    label.verticalAlign = style.verticalAlign === 'middle' ? Label.VerticalAlign.CENTER : style.verticalAlign === 'bottom' ? Label.VerticalAlign.BOTTOM : Label.VerticalAlign.TOP;
-    label.color = Color.fromHEX(new Color(), style.color || '#ffffff');
-    if ((style.strokeWidth || 0) > 0) {
-      label.enableOutline = true;
-      label.outlineColor = Color.fromHEX(new Color(), style.strokeColor || '#000000');
-      label.outlineWidth = Math.max(1, Math.round(style.strokeWidth || 0));
-    }
-    return node;
-  }
-}`;
-
-export const exportUnityZip = (document: DocumentState, artboardId?: string, groupId?: string) => {
-  const output = createExportDocument(document, artboardId, groupId);
-  const files: Record<string, Uint8Array> = {
-    'layout.json': strToU8(JSON.stringify(output, null, 2)),
-    'Assets/LayerCanvas/Editor/LayerCanvasImporter.cs': strToU8(unityImporter),
-    'README.txt': strToU8('Import layout.json and LayerCanvasImporter.cs into Unity. Select layout.json and run Tools > Layer Canvas > Import selected layout. Text layers become native Unity UI Text objects. Put font assets under Resources using the matching textStyle.fontFamily resource path to use non-default fonts.'),
-  };
-  output.layers
-    .filter((layer): layer is LayerNode & { source: string } => layer.kind === 'image' && Boolean(layer.source))
-    .forEach((layer) => {
-      files[`assets/${safeName(layer.name)}-${layer.id.slice(-6)}.png`] = dataUrlBytes(layer.source);
-    });
-  download(`${safeName(output.artboards[0].name)}-unity.zip`, new Blob([zipSync(files)], { type: 'application/zip' }));
+export const validatePsdExport = async (document: DocumentState, artboardId?: string, groupId?: string, options: PsdExportOptions = {}) => {
+  const bytes = await createPsd(document, artboardId, groupId, options);
+  const parsed = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
+  const info = psdExportInfo(document, artboardId, groupId);
+  if (parsed.width !== info.width || parsed.height !== info.height) throw new Error('PSD 尺寸回读不一致。');
+  const count = (children: typeof parsed.children): number => (children || []).reduce((sum, layer) => sum + (layer.children ? count(layer.children) : 1), 0);
+  if (count(parsed.children) !== info.imageCount + info.textCount) throw new Error('PSD 图层回读数量不一致。');
+  const textCount = (children: typeof parsed.children): number => (children || []).reduce((sum, layer) => sum + (layer.children ? textCount(layer.children) : layer.text ? 1 : 0), 0);
+  const expectedTextCount = options.rasterizeText ? 0 : info.textCount;
+  if (textCount(parsed.children) !== expectedTextCount) throw new Error('PSD 可编辑文字图层回读数量不一致。');
+  return { bytes: bytes.byteLength, ...info };
 };
 
-export const exportCocosZip = (document: DocumentState, artboardId?: string, groupId?: string) => {
-  const output = createExportDocument(document, artboardId, groupId);
-  const files: Record<string, Uint8Array> = {
-    'layout.json': strToU8(JSON.stringify(output, null, 2)),
-    'LayerCanvasImporter.ts': strToU8(cocosImporter),
-    'README.txt': strToU8('Cocos Creator 3.x: copy LayerCanvasImporter.ts into your project. For each layout.json layer whose kind is "text", call LayerCanvasImporter.createText(layer, parentNode). Import the desired font assets and set their compatible system family in textStyle.fontFamily when using bitmap/native custom fonts.'),
-  };
-  output.layers
-    .filter((layer): layer is LayerNode & { source: string } => layer.kind === 'image' && Boolean(layer.source))
-    .forEach(layer => { files[`assets/${safeName(layer.name)}-${layer.id.slice(-6)}.png`] = dataUrlBytes(layer.source); });
-  download(`${safeName(output.artboards[0].name)}-cocos.zip`, new Blob([zipSync(files)], { type: 'application/zip' }));
+export const exportPsd = async (document: DocumentState, artboardId?: string, groupId?: string, options: PsdExportOptions = {}) => {
+  const info = psdExportInfo(document, artboardId, groupId);
+  const bytes = await createPsd(document, artboardId, groupId, options);
+  download(psdFileName(options.fileName || info.name), new Blob([bytes], { type: 'application/octet-stream' }));
 };

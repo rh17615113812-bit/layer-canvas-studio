@@ -83,13 +83,22 @@ const waitForComfyHistory = async (baseUrl, promptId) => {
   }
   throw new Error('ComfyUI 工作流执行超时（180 秒）。');
 };
-const runComfyWorkflow = async ({ image, comfyUrl, workflow: suppliedWorkflow, inputNodeId, outputNodeIds }) => {
+const runComfyWorkflow = async ({ image, comfyUrl, workflow: suppliedWorkflow, inputNodeId, outputNodeIds, promptOverride }) => {
   const baseUrl = localComfyUrl(comfyUrl);
   const workflow = comfyWorkflow(suppliedWorkflow);
   if (Array.isArray(workflow.nodes)) throw new Error('请选择 ComfyUI 的“Save (API Format)”工作流 JSON，而不是界面工作流。');
   const entries = Object.entries(workflow);
   const inputId = String(inputNodeId || entries.find(([, node]) => String(node?.class_type || '').toLowerCase().includes('loadimage'))?.[0] || '');
   if (!inputId || !workflow[inputId]?.inputs) throw new Error('工作流中找不到 LoadImage 节点，请填写输入节点 ID。');
+  if (promptOverride !== undefined) {
+    const promptNodeId = String(promptOverride?.nodeId || '').trim();
+    const promptFieldName = String(promptOverride?.fieldName || '').trim();
+    const prompt = typeof promptOverride?.prompt === 'string' ? promptOverride.prompt.trim() : '';
+    const promptInputs = workflow[promptNodeId]?.inputs;
+    if (!promptNodeId || !promptFieldName || !prompt) throw new Error('背景分离提示词节点 ID、字段名和提示词都必须填写。');
+    if (!promptInputs || typeof promptInputs[promptFieldName] !== 'string') throw new Error(`ComfyUI 背景提示词节点 ${promptNodeId} 的文本字段 ${promptFieldName} 不存在。`);
+    promptInputs[promptFieldName] = prompt;
+  }
   const file = dataUrlFile(image);
   const filename = `layer-canvas-${crypto.randomUUID()}.${file.extension}`;
   const form = new FormData();
@@ -129,13 +138,18 @@ const runningHubJson = async (response, fallback) => {
 };
 const runningHubData = body => body?.data && typeof body.data === 'object' ? body.data : body;
 const runningHubStatus = body => String(runningHubData(body)?.status || body?.status || '').toUpperCase();
-const runRunningHubWorkflow = async ({ image, config = {} }) => {
+const runRunningHubWorkflow = async ({ image, config = {}, promptOverride }) => {
   const apiKey = process.env.RUNNINGHUB_API_KEY;
   if (!apiKey) throw new Error('未配置 RUNNINGHUB_API_KEY。请仅在本机 .env.local 中填写。');
   const workflowId = String(config.workflowId || process.env.RUNNINGHUB_WORKFLOW_ID || '').trim();
   const inputNodeId = String(config.inputNodeId || '').trim();
   const inputFieldName = String(config.inputFieldName || 'image').trim();
+  const promptNodeId = String(promptOverride?.nodeId || '').trim();
+  const promptFieldName = String(promptOverride?.fieldName || '').trim();
+  const backgroundPrompt = typeof promptOverride?.prompt === 'string' ? promptOverride.prompt.trim() : '';
   if (!workflowId) throw new Error('请在 RunningHub 配置中填写工作流 API ID，或配置 RUNNINGHUB_WORKFLOW_ID。');
+  if (!inputNodeId) throw new Error('请在 RunningHub 配置中填写图片输入节点 ID。');
+  if (promptOverride !== undefined && (!promptNodeId || !promptFieldName || !backgroundPrompt)) throw new Error('背景分离提示词节点 ID、字段名和提示词都必须填写。');
   const file = dataUrlFile(image);
   const form = new FormData();
   form.append('file', new Blob([file.bytes], { type: file.mime }), `layer-canvas-${crypto.randomUUID()}.${file.extension}`);
@@ -145,6 +159,7 @@ const runRunningHubWorkflow = async ({ image, config = {} }) => {
   if (!imageUrl) throw new Error('RunningHub 上传接口没有返回 download_url。');
   const instanceType = ['default', 'plus', 'ultra'].includes(config.instanceType) ? config.instanceType : 'default';
   const nodeInfoList = inputNodeId ? [{ nodeId: inputNodeId, fieldName: inputFieldName, fieldValue: imageUrl, description: 'Layer Canvas 拆分区域输入图' }] : [];
+  if (promptOverride !== undefined) nodeInfoList.push({ nodeId: promptNodeId, fieldName: promptFieldName, fieldValue: backgroundPrompt, description: 'Layer Canvas 背景分离提示词' });
   const submitted = await runningHubJson(await fetch(`https://www.runninghub.cn/openapi/v2/run/workflow/${encodeURIComponent(workflowId)}`, {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ addMetadata: config.addMetadata === true, nodeInfoList, instanceType, usePersonalQueue: config.usePersonalQueue === true }),

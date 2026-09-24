@@ -10,7 +10,9 @@ import {
   Transformer,
 } from "react-konva";
 import Konva from "konva";
-import { exportCocosZip, exportJson, exportPsd, exportUnityZip } from "./exports";
+import { exportJson } from "./exports";
+import PsdExportDialog from "./PsdExportDialog";
+import { exportEngineZip } from "./engineExports";
 import { seedreamLayerSplit } from "./seedream";
 import { importPsd } from "./psdImport";
 import SmartSplitWorkspace, {
@@ -614,6 +616,7 @@ export default function App() {
     } | null>(null),
     [splitting, setSplitting] = useState(false),
     [smartSplitOpen, setSmartSplitOpen] = useState(false),
+    [psdExportRequest, setPsdExportRequest] = useState<{ document: DocumentState; artboardId?: string; groupId?: string } | null>(null),
     [workspaceReady, setWorkspaceReady] = useState(false);
   const [contentSelectionIds, setContentSelectionIds] = useState<string[]>([]),
     [collapsedGroups, setCollapsedGroups] = useState<string[]>([]),
@@ -629,6 +632,10 @@ export default function App() {
       () => [...doc.layers].sort((a, b) => a.zIndex - b.zIndex),
       [doc.layers],
     );
+  const openPsdExport = (groupId?: string) => {
+    if (!activeArtboard && !groupId) return setNotice('请先选择可导出的画板。');
+    setPsdExportRequest({ document: doc, artboardId: activeArtboard?.id, groupId });
+  };
   useEffect(() => {
     let active = true;
     void loadWorkspace()
@@ -1786,7 +1793,7 @@ export default function App() {
       return setNotice(message);
     }
     setSplitting(true);
-    setNotice(`ComfyUI 正在依次处理 ${splitBoxes.length} 个框选区域…`);
+    setNotice(`ComfyUI 将先提交 1 次整图背景分离，再处理 ${splitBoxes.length} 个框选区域…`);
     try {
       const imageWidth =
           targetLayer.assetWidth || targetLayer.width || doc.canvas.width,
@@ -1802,7 +1809,7 @@ export default function App() {
         imageWidth,
         imageHeight,
       );
-      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length} 个本地拆分图层已放入其中；原图保持不变。`);
+      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length - 1} 个框选图层和 1 个背景图层已放入其中；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "ComfyUI 本地拆分失败。");
@@ -1826,7 +1833,7 @@ export default function App() {
       return setNotice(message);
     }
     setSplitting(true);
-    setNotice(`RunningHub 正在依次处理 ${splitBoxes.length} 个框选区域…`);
+    setNotice(`RunningHub 将先提交 1 次整图背景分离，再处理 ${splitBoxes.length} 个框选区域…`);
     try {
       const imageWidth = targetLayer.assetWidth || targetLayer.width || doc.canvas.width;
       const imageHeight = targetLayer.assetHeight || targetLayer.height || doc.canvas.height;
@@ -1842,7 +1849,7 @@ export default function App() {
       );
       const imageCount = layers.filter((layer) => layer.kind === "image").length;
       const groupCount = layers.filter((layer) => layer.kind === "group").length;
-      setNotice(`已在右侧新建画板「${comparison.name}」，${imageCount} 个 RunningHub 图层已放入其中${groupCount ? `，包含 ${groupCount} 个重叠框组` : ""}；原图保持不变。`);
+      setNotice(`已在右侧新建画板「${comparison.name}」，${imageCount - 1} 个框选图层和 1 个背景图层已放入其中${groupCount ? `，包含 ${groupCount} 个重叠框组` : ""}；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "RunningHub 工作流拆分失败。");
@@ -2716,14 +2723,7 @@ export default function App() {
       makeButton(
         selected?.kind === "group" ? "⇧  导出组" : "⇧  导出画板",
         undefined,
-        () =>
-          void exportPsd(
-            doc,
-            activeArtboard?.id,
-            selected?.kind === "group" ? selected.id : undefined,
-          ).catch((error) =>
-            setNotice(error.message),
-          ),
+        () => openPsdExport(selected?.kind === "group" ? selected.id : undefined),
       ),
       makeButton("⚒  工具箱", undefined, () =>
         setNotice("工具箱功能将在下一版开放。"),
@@ -3133,25 +3133,27 @@ export default function App() {
           </button>
           <button
             disabled={!activeArtboard}
-            onClick={() =>
-              exportPsd(doc, activeArtboard?.id, exportGroupId).catch((e) =>
-                setNotice(e.message),
-              )
-            }
+            onClick={() => openPsdExport(exportGroupId)}
           >
             {exportGroupId ? "导出组 PSD" : "导出画板 PSD"}
           </button>
           <button
             disabled={!activeArtboard}
-            onClick={() => exportUnityZip(doc, activeArtboard?.id, exportGroupId)}
+            onClick={() => exportEngineZip(doc, 'unity', activeArtboard?.id, exportGroupId).catch(e => setNotice(e.message))}
           >
             {exportGroupId ? "组 Unity 包" : "画板 Unity 包"}
           </button>
           <button
             disabled={!activeArtboard}
-            onClick={() => exportCocosZip(doc, activeArtboard?.id, exportGroupId)}
+            onClick={() => exportEngineZip(doc, 'cocos', activeArtboard?.id, exportGroupId).catch(e => setNotice(e.message))}
           >
             {exportGroupId ? "组 Cocos 包" : "画板 Cocos 包"}
+          </button>
+          <button
+            disabled={!activeArtboard}
+            onClick={() => exportEngineZip(doc, 'godot', activeArtboard?.id, exportGroupId).catch(e => setNotice(e.message))}
+          >
+            {exportGroupId ? "组 Godot 包" : "画板 Godot 包"}
           </button>
         </div>
       </header>
@@ -3523,6 +3525,13 @@ export default function App() {
         </aside>
       </main>
       {smartSplitPortal}
+      {psdExportRequest && <PsdExportDialog
+        document={psdExportRequest.document}
+        artboardId={psdExportRequest.artboardId}
+        groupId={psdExportRequest.groupId}
+        onClose={() => setPsdExportRequest(null)}
+        onExported={setNotice}
+      />}
       {menu && (
         <div
           className="context-menu"

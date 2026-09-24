@@ -2,6 +2,7 @@ import type { SmartSplitBox } from './SmartSplitWorkspace';
 import { fitLocalAssetToBox } from './localComfy';
 import type { LayerNode } from './types';
 import { getOverlapMasksForBox, getOverlappingBoxGroups, zIndexForFrontToBackIndex } from './boxOverlap';
+import type { WorkflowPromptOverride } from './backgroundPrompt';
 
 export type RunningHubConfig = {
   workflowId?: string;
@@ -11,6 +12,9 @@ export type RunningHubConfig = {
   instanceType?: 'default' | 'plus' | 'ultra';
   addMetadata?: boolean;
   usePersonalQueue?: boolean;
+  backgroundPromptNodeId?: string;
+  backgroundPromptFieldName?: string;
+  backgroundPrompt?: string;
 };
 
 const loadImage = (source: string) => new Promise<HTMLImageElement>((resolve, reject) => {
@@ -51,6 +55,12 @@ export async function runningHubLayerSplit(
   groupingBoxes: SmartSplitBox[] = boxes,
 ): Promise<LayerNode[]> {
   if (!boxes.length) throw new Error('RunningHub 拆分需要先手动框选或使用 AI 自动框选。');
+  const promptNodeId = config.backgroundPromptNodeId?.trim() || '';
+  const promptFieldName = config.backgroundPromptFieldName?.trim() || 'text';
+  const prompt = config.backgroundPrompt?.trim() || '';
+  if (!promptNodeId) throw new Error('请在 RunningHub 配置中填写背景提示词节点 ID。');
+  if (!prompt) throw new Error('背景分离提示词不能为空。');
+  const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
   const sourceImage = await loadImage(source);
   const overlapGroups = getOverlappingBoxGroups(groupingBoxes);
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
@@ -58,6 +68,34 @@ export async function runningHubLayerSplit(
     overlapGroups.flatMap(group => group.boxIds.map(id => [id, group] as const)),
   );
   const results: LayerNode[] = [];
+  const backgroundResponse = await fetch('http://127.0.0.1:8787/api/runninghub/layer-split', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: source, config, promptOverride }),
+  });
+  const backgroundBody = await backgroundResponse.json().catch(() => ({}));
+  if (!backgroundResponse.ok) throw new Error(backgroundBody.error || 'RunningHub 背景分离工作流失败。');
+  const backgroundSource = typeof backgroundBody.imageUrl === 'string' ? backgroundBody.imageUrl : '';
+  if (!backgroundSource) throw new Error('RunningHub 背景分离工作流没有返回图片。');
+  const backgroundAsset = await loadImage(backgroundSource);
+  results.push({
+    id: crypto.randomUUID().replaceAll('-', ''),
+    name: '背景 · RunningHub 整图分离',
+    kind: 'image',
+    parentId: null,
+    x: 0,
+    y: 0,
+    width: sourceImage.naturalWidth,
+    height: sourceImage.naturalHeight,
+    zIndex: 0,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    source: backgroundSource,
+    assetWidth: backgroundAsset.naturalWidth,
+    assetHeight: backgroundAsset.naturalHeight,
+  });
+
   for (const [index, box] of boxes.entries()) {
     const groupingIndex = groupingIndexByBoxId.get(box.id) ?? index;
     const overlapMasks = getOverlapMasksForBox(groupingBoxes, groupingIndex);
@@ -76,10 +114,11 @@ export async function runningHubLayerSplit(
     results.push({
       id: crypto.randomUUID().replaceAll('-', ''), name: `RunningHub · ${box.name || `区域 ${index + 1}`}`,
       kind: 'image', parentId: overlapGroup?.id ?? null, x: placement.x, y: placement.y, width: placement.width, height: placement.height,
-      zIndex: zIndexForFrontToBackIndex(groupingBoxes.length, groupingIndex), visible: true, locked: false, opacity: 1, source: outputSource,
+      zIndex: zIndexForFrontToBackIndex(groupingBoxes.length, groupingIndex) + 1, visible: true, locked: false, opacity: 1, source: outputSource,
       assetWidth: asset.naturalWidth, assetHeight: asset.naturalHeight,
     });
   }
+
   const returnedBoxIds = new Set(boxes.map(box => box.id));
   const groups: LayerNode[] = overlapGroups
     .filter(group => group.boxIds.some(id => returnedBoxIds.has(id)))
@@ -92,7 +131,7 @@ export async function runningHubLayerSplit(
     y: group.bbox[1],
     width: group.bbox[2] - group.bbox[0],
     height: group.bbox[3] - group.bbox[1],
-    zIndex: zIndexForFrontToBackIndex(groupingBoxes.length, group.firstIndex),
+    zIndex: zIndexForFrontToBackIndex(groupingBoxes.length, group.firstIndex) + 1,
     visible: true,
     locked: false,
     boundsMode: 'manual',

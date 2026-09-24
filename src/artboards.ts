@@ -55,6 +55,7 @@ export const createGroupDocument = (document: DocumentState, groupId: string): D
       parentId: layer.parentId === group.id ? null : layer.parentId,
       x: layer.x - group.x,
       y: layer.y - group.y,
+      visible: layer.visible && group.visible,
     })),
   };
 };

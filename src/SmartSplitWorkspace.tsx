@@ -5,6 +5,7 @@ import { DEFAULT_VISION_INSTRUCTION } from './smartSplit';
 import type { LocalComfyConfig } from './localComfy';
 import type { RunningHubConfig } from './runningHub';
 import { getOverlapMasksForBox, getOverlappingBoxGroups, orderBoxesByDefaultStacking, reorderGroupMembers } from './boxOverlap';
+import { DEFAULT_BACKGROUND_PROMPT } from './backgroundPrompt';
 
 export type SmartSplitBox = { id: string; name: string; type: 'ui' | 'text'; bbox: [number, number, number, number]; boxNumber?: number; confidence?: number; shouldSplit?: boolean; thumbnail?: string };
 export type SplitMode = 'api' | 'local' | 'runninghub';
@@ -77,9 +78,14 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   const [workflowName, setWorkflowName] = useState('使用服务端配置');
   const [inputNodeId, setInputNodeId] = useState(() => localStorage.getItem('layer-canvas-comfy-input-node') || '');
   const [outputNodeIds, setOutputNodeIds] = useState(() => localStorage.getItem('layer-canvas-comfy-output-nodes') || '');
+  const [backgroundPrompt, setBackgroundPrompt] = useState(() => localStorage.getItem('layer-canvas-background-prompt') || DEFAULT_BACKGROUND_PROMPT);
+  const [comfyBackgroundPromptNodeId, setComfyBackgroundPromptNodeId] = useState(() => localStorage.getItem('layer-canvas-comfy-background-prompt-node') || '');
+  const [comfyBackgroundPromptFieldName, setComfyBackgroundPromptFieldName] = useState(() => localStorage.getItem('layer-canvas-comfy-background-prompt-field') || 'text');
   const [runningHubWorkflowId, setRunningHubWorkflowId] = useState(() => localStorage.getItem('layer-canvas-runninghub-workflow-id') || '2101886414299426818');
   const [runningHubInputNodeId, setRunningHubInputNodeId] = useState(() => localStorage.getItem('layer-canvas-runninghub-input-node') || '');
   const [runningHubInputFieldName, setRunningHubInputFieldName] = useState(() => localStorage.getItem('layer-canvas-runninghub-input-field') || 'image');
+  const [runningHubBackgroundPromptNodeId, setRunningHubBackgroundPromptNodeId] = useState(() => localStorage.getItem('layer-canvas-runninghub-background-prompt-node') || '');
+  const [runningHubBackgroundPromptFieldName, setRunningHubBackgroundPromptFieldName] = useState(() => localStorage.getItem('layer-canvas-runninghub-background-prompt-field') || 'text');
   const [runningHubOutputNodeIds, setRunningHubOutputNodeIds] = useState(() => localStorage.getItem('layer-canvas-runninghub-output-nodes') || '');
   const [runningHubInstanceType, setRunningHubInstanceType] = useState<'default' | 'plus' | 'ultra'>(() => (localStorage.getItem('layer-canvas-runninghub-instance') as 'default' | 'plus' | 'ultra') || 'default');
   const [runningHubAddMetadata, setRunningHubAddMetadata] = useState(() => localStorage.getItem('layer-canvas-runninghub-metadata') === 'true');
@@ -247,13 +253,83 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   }, [boxes, configOpen, redo, selectedBoxId, undo]);
   const loadWorkflow = async (file?: File) => { if (!file) return; setError(''); try { const parsed = JSON.parse(await file.text()); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('工作流 JSON 格式无效。'); setWorkflow(parsed as Record<string, unknown>); setWorkflowName(file.name); } catch (cause) { setWorkflow(undefined); setWorkflowName('使用服务端配置'); setError(cause instanceof Error ? cause.message : '无法读取工作流 JSON。'); } };
   const loadRunningHubWorkflow = async (file?: File) => { if (!file) return; setError(''); try { const parsed = JSON.parse(await file.text()); if (!parsed || typeof parsed !== 'object') throw new Error('RunningHub 工作流节点映射 JSON 格式无效。'); const detected = detectRunningHubConfig(parsed); setRunningHubWorkflowName(file.name); setRunningHubNodes(detected.nodes); if (detected.workflowId) setRunningHubWorkflowId(detected.workflowId); const preferred = detected.nodes.find(node => node.score === 2) || detected.nodes[0]; if (preferred) { setRunningHubInputNodeId(preferred.id); if (preferred.fieldName) setRunningHubInputFieldName(preferred.fieldName); } if (!detected.nodes.length) setError('未在该 JSON 中发现节点 ID；请确认这是工作流节点映射文件，或手动填写节点 ID。'); } catch (cause) { setRunningHubWorkflowName('未选择工作流节点映射'); setRunningHubNodes([]); setError(cause instanceof Error ? cause.message : '无法读取 RunningHub 节点映射 JSON。'); } };
-  const start = async () => { if (mode !== 'api' && !normalized.length) { setError(`${mode === 'local' ? '本地' : 'RunningHub'}拆分不会返回坐标，请先手动框选或使用 AI 自动框选。`); return; } setBusy(true); setError(''); try { localStorage.setItem('layer-canvas-comfy-url', comfyUrl); localStorage.setItem('layer-canvas-comfy-input-node', inputNodeId); localStorage.setItem('layer-canvas-comfy-output-nodes', outputNodeIds); localStorage.setItem('layer-canvas-runninghub-workflow-id', runningHubWorkflowId); localStorage.setItem('layer-canvas-runninghub-input-node', runningHubInputNodeId); localStorage.setItem('layer-canvas-runninghub-input-field', runningHubInputFieldName); localStorage.setItem('layer-canvas-runninghub-output-nodes', runningHubOutputNodeIds); localStorage.setItem('layer-canvas-runninghub-instance', runningHubInstanceType); localStorage.setItem('layer-canvas-runninghub-metadata', String(runningHubAddMetadata)); localStorage.setItem('layer-canvas-runninghub-personal-queue', String(runningHubPersonalQueue)); const config = mode === 'local' ? { comfyUrl, workflow, inputNodeId: inputNodeId.trim() || undefined, outputNodeIds: outputNodeIds.split(',').map(value => value.trim()).filter(Boolean) } : mode === 'runninghub' ? { workflowId: runningHubWorkflowId.trim() || undefined, inputNodeId: runningHubInputNodeId.trim() || undefined, inputFieldName: runningHubInputFieldName.trim() || undefined, outputNodeIds: runningHubOutputNodeIds.split(',').map(value => value.trim()).filter(Boolean), instanceType: runningHubInstanceType, addMetadata: runningHubAddMetadata, usePersonalQueue: runningHubPersonalQueue } : undefined; await onStart(normalized.map((box, index) => ({ ...box, name: box.name.trim() || `区域 ${index + 1}` })), mode, config); } catch (cause) { setError(cause instanceof Error ? cause.message : '图层拆分失败，请重试。'); } finally { setBusy(false); } };
+  const start = async () => {
+    if (mode !== 'api' && !normalized.length) {
+      setError(`${mode === 'local' ? '本地' : 'RunningHub'}拆分不会返回坐标，请先手动框选或使用 AI 自动框选。`);
+      return;
+    }
+    if (mode !== 'api' && !backgroundPrompt.trim()) {
+      setError('请填写背景分离提示词。');
+      return;
+    }
+    if (mode === 'local' && !comfyBackgroundPromptNodeId.trim()) {
+      setError('请在本地配置中填写背景提示词节点 ID。');
+      return;
+    }
+    if (mode === 'runninghub' && !runningHubBackgroundPromptNodeId.trim()) {
+      setError('请在 RunningHub 配置中填写背景提示词节点 ID。');
+      return;
+    }
+    if (mode === 'runninghub' && !runningHubInputNodeId.trim()) {
+      setError('请在 RunningHub 配置中填写图片输入节点 ID，才能传入框选区域和整张原图。');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      localStorage.setItem('layer-canvas-comfy-url', comfyUrl);
+      localStorage.setItem('layer-canvas-comfy-input-node', inputNodeId);
+      localStorage.setItem('layer-canvas-comfy-output-nodes', outputNodeIds);
+      localStorage.setItem('layer-canvas-background-prompt', backgroundPrompt);
+      localStorage.setItem('layer-canvas-comfy-background-prompt-node', comfyBackgroundPromptNodeId);
+      localStorage.setItem('layer-canvas-comfy-background-prompt-field', comfyBackgroundPromptFieldName);
+      localStorage.setItem('layer-canvas-runninghub-workflow-id', runningHubWorkflowId);
+      localStorage.setItem('layer-canvas-runninghub-input-node', runningHubInputNodeId);
+      localStorage.setItem('layer-canvas-runninghub-input-field', runningHubInputFieldName);
+      localStorage.setItem('layer-canvas-runninghub-background-prompt-node', runningHubBackgroundPromptNodeId);
+      localStorage.setItem('layer-canvas-runninghub-background-prompt-field', runningHubBackgroundPromptFieldName);
+      localStorage.setItem('layer-canvas-runninghub-output-nodes', runningHubOutputNodeIds);
+      localStorage.setItem('layer-canvas-runninghub-instance', runningHubInstanceType);
+      localStorage.setItem('layer-canvas-runninghub-metadata', String(runningHubAddMetadata));
+      localStorage.setItem('layer-canvas-runninghub-personal-queue', String(runningHubPersonalQueue));
+      const config = mode === 'local'
+        ? {
+            comfyUrl,
+            workflow,
+            inputNodeId: inputNodeId.trim() || undefined,
+            outputNodeIds: outputNodeIds.split(',').map(value => value.trim()).filter(Boolean),
+            backgroundPromptNodeId: comfyBackgroundPromptNodeId.trim(),
+            backgroundPromptFieldName: comfyBackgroundPromptFieldName.trim() || 'text',
+            backgroundPrompt,
+          }
+        : mode === 'runninghub'
+          ? {
+              workflowId: runningHubWorkflowId.trim() || undefined,
+              inputNodeId: runningHubInputNodeId.trim() || undefined,
+              inputFieldName: runningHubInputFieldName.trim() || undefined,
+              outputNodeIds: runningHubOutputNodeIds.split(',').map(value => value.trim()).filter(Boolean),
+              instanceType: runningHubInstanceType,
+              addMetadata: runningHubAddMetadata,
+              usePersonalQueue: runningHubPersonalQueue,
+              backgroundPromptNodeId: runningHubBackgroundPromptNodeId.trim(),
+              backgroundPromptFieldName: runningHubBackgroundPromptFieldName.trim() || 'text',
+              backgroundPrompt,
+            }
+          : undefined;
+      await onStart(normalized.map((box, index) => ({ ...box, name: box.name.trim() || `区域 ${index + 1}` })), mode, config);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '图层拆分失败，请重试。');
+    } finally {
+      setBusy(false);
+    }
+  };
   const handles: Direction[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
   const stage = <div className="smart-split-canvas-area" onContextMenu={event => event.preventDefault()} onWheel={event => { event.preventDefault(); setZoom(current => Math.max(.15, Math.min(2, current + (event.deltaY < 0 ? .1 : -.1)))); }} onPointerDown={beginDraw} onPointerMove={event => { movePan(event); moveDraw(event); moveAction(event); }} onPointerUp={() => { panning.current = null; endDraw(); endAction(); }} onPointerCancel={cancelPointer}><div className="smart-split-stage-wrap"><div ref={viewportRef} className={`smart-split-stage${panning.current ? ' is-panning' : ''}`} style={{ width: display.width, height: display.height, transform: `translate(${pan.x}px, ${pan.y}px)` }}><img ref={imageRef} src={image.source} alt={image.name} draggable={false} /><div className="smart-split-boxes">{boxes.map((box, index) => { const [left, top, right, bottom] = box.bbox; return <div key={box.id} data-box className={`smart-split-box${selectedBoxId === box.id ? ' is-selected' : ''}`} style={{ left: left * scale, top: top * scale, width: (right - left) * scale, height: (bottom - top) * scale }}><b onPointerDown={event => { setSelectedBoxId(box.id); beginAction(event, box, 'move'); }}>{box.boxNumber ?? index + 1}</b>{handles.map(direction => <i key={direction} className={`smart-split-resize handle-${direction}`} onPointerDown={event => { setSelectedBoxId(box.id); beginAction(event, box, 'resize', direction); }} />)}</div>; })}</div></div></div></div>;
-  const localSettings = <div className="smart-split-local-settings"><label><span>ComfyUI 地址</span><input value={comfyUrl} onChange={event => setComfyUrl(event.target.value)} placeholder="http://127.0.0.1:8188" /></label><label><span>API 工作流 JSON</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadWorkflow(event.target.files?.[0])} /><b>{workflowName}</b></span></label><label><span>输入节点 ID（可选）</span><input value={inputNodeId} onChange={event => setInputNodeId(event.target.value)} placeholder="自动查找 LoadImage" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={outputNodeIds} onChange={event => setOutputNodeIds(event.target.value)} placeholder="自动收集所有图片输出" /></label></div>;
+  const backgroundPromptEditor = <label className="smart-split-background-prompt"><span>背景分离提示词（每次额外调用一次整图工作流）</span><textarea value={backgroundPrompt} onChange={event => setBackgroundPrompt(event.target.value)} /><button type="button" onClick={() => setBackgroundPrompt(DEFAULT_BACKGROUND_PROMPT)}>恢复默认提示词</button></label>;
+  const localSettings = <div className="smart-split-local-settings"><label><span>ComfyUI 地址</span><input value={comfyUrl} onChange={event => setComfyUrl(event.target.value)} placeholder="http://127.0.0.1:8188" /></label><label><span>API 工作流 JSON</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadWorkflow(event.target.files?.[0])} /><b>{workflowName}</b></span></label><label><span>输入节点 ID（可选）</span><input value={inputNodeId} onChange={event => setInputNodeId(event.target.value)} placeholder="自动查找 LoadImage" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={outputNodeIds} onChange={event => setOutputNodeIds(event.target.value)} placeholder="自动收集所有图片输出" /></label><label><span>背景提示词节点 ID（必填）</span><input value={comfyBackgroundPromptNodeId} onChange={event => setComfyBackgroundPromptNodeId(event.target.value)} placeholder="API 工作流中的文本编码节点 ID" /></label><label><span>提示词字段名</span><input value={comfyBackgroundPromptFieldName} onChange={event => setComfyBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label>{backgroundPromptEditor}</div>;
   const filteredRunningHubNodes = runningHubNodes.filter(node => `${node.id} ${node.label}`.toLowerCase().includes(runningHubNodeSearch.trim().toLowerCase()));
   const chooseRunningHubNode = (node: RunningHubNodeCandidate) => { setRunningHubInputNodeId(node.id); if (node.fieldName) setRunningHubInputFieldName(node.fieldName); };
-  const runningHubSettings = <div className="smart-split-local-settings smart-split-runninghub-settings"><p className="smart-split-config-note">此页调用 RunningHub ComfyUI 工作流 API。API Key 只从本机服务端 .env.local 读取，不会保存到浏览器。</p><label className="smart-split-config-upload"><span>工作流节点映射 JSON（可选）</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadRunningHubWorkflow(event.target.files?.[0])} /><b>{runningHubWorkflowName}</b></span></label><label><span>工作流 API ID</span><input value={runningHubWorkflowId} onChange={event => setRunningHubWorkflowId(event.target.value)} placeholder="2101886414299426818" /></label><label><span>图片输入节点 ID（可选）</span><input value={runningHubInputNodeId} onChange={event => setRunningHubInputNodeId(event.target.value)} placeholder="上传 JSON 后自动识别，亦可手动填写" /></label><label><span>图片字段名</span><input value={runningHubInputFieldName} onChange={event => setRunningHubInputFieldName(event.target.value)} placeholder="image" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={runningHubOutputNodeIds} onChange={event => setRunningHubOutputNodeIds(event.target.value)} placeholder="留空取第一个图片结果" /></label><label><span>运行实例</span><select value={runningHubInstanceType} onChange={event => setRunningHubInstanceType(event.target.value as 'default' | 'plus' | 'ultra')}><option value="default">default · 24G</option><option value="plus">plus · 48G</option><option value="ultra">ultra · 84G</option></select></label><div className="smart-split-runninghub-options"><label><input type="checkbox" checked={runningHubAddMetadata} onChange={event => setRunningHubAddMetadata(event.target.checked)} />输出附带工作流元数据</label><label><input type="checkbox" checked={runningHubPersonalQueue} onChange={event => setRunningHubPersonalQueue(event.target.checked)} />使用个人独占队列</label></div>{runningHubNodes.length > 0 && <section className="smart-split-node-picker"><header><b>识别到 {runningHubNodes.length} 个节点</b><input value={runningHubNodeSearch} onChange={event => setRunningHubNodeSearch(event.target.value)} placeholder="搜索节点 ID 或名称" /></header><div>{filteredRunningHubNodes.map(node => <button type="button" className={node.id === runningHubInputNodeId ? 'active' : ''} key={node.id} onClick={() => chooseRunningHubNode(node)}><b>{node.id}</b><span>{node.label}</span>{node.score === 2 && <em>图片候选</em>}</button>)}</div></section>}</div>;
+  const runningHubSettings = <div className="smart-split-local-settings smart-split-runninghub-settings"><p className="smart-split-config-note">此页调用 RunningHub ComfyUI 工作流 API。API Key 只从本机服务端 .env.local 读取，不会保存到浏览器。</p><label className="smart-split-config-upload"><span>工作流节点映射 JSON（可选）</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadRunningHubWorkflow(event.target.files?.[0])} /><b>{runningHubWorkflowName}</b></span></label><label><span>工作流 API ID</span><input value={runningHubWorkflowId} onChange={event => setRunningHubWorkflowId(event.target.value)} placeholder="2101886414299426818" /></label><label><span>图片输入节点 ID（必填）</span><input value={runningHubInputNodeId} onChange={event => setRunningHubInputNodeId(event.target.value)} placeholder="上传 JSON 后自动识别，亦可手动填写" /></label><label><span>图片字段名</span><input value={runningHubInputFieldName} onChange={event => setRunningHubInputFieldName(event.target.value)} placeholder="image" /></label><label><span>背景提示词节点 ID（必填）</span><input value={runningHubBackgroundPromptNodeId} onChange={event => setRunningHubBackgroundPromptNodeId(event.target.value)} placeholder="工作流中的文本提示词节点 ID" /></label><label><span>提示词字段名</span><input value={runningHubBackgroundPromptFieldName} onChange={event => setRunningHubBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={runningHubOutputNodeIds} onChange={event => setRunningHubOutputNodeIds(event.target.value)} placeholder="留空取第一个图片结果" /></label><label><span>运行实例</span><select value={runningHubInstanceType} onChange={event => setRunningHubInstanceType(event.target.value as 'default' | 'plus' | 'ultra')}><option value="default">default · 24G</option><option value="plus">plus · 48G</option><option value="ultra">ultra · 84G</option></select></label><div className="smart-split-runninghub-options"><label><input type="checkbox" checked={runningHubAddMetadata} onChange={event => setRunningHubAddMetadata(event.target.checked)} />输出附带工作流元数据</label><label><input type="checkbox" checked={runningHubPersonalQueue} onChange={event => setRunningHubPersonalQueue(event.target.checked)} />使用个人独占队列</label></div>{backgroundPromptEditor}{runningHubNodes.length > 0 && <section className="smart-split-node-picker"><header><b>识别到 {runningHubNodes.length} 个节点</b><input value={runningHubNodeSearch} onChange={event => setRunningHubNodeSearch(event.target.value)} placeholder="搜索节点 ID 或名称" /></header><div>{filteredRunningHubNodes.map(node => <button type="button" className={node.id === runningHubInputNodeId ? 'active' : ''} key={node.id} onClick={() => chooseRunningHubNode(node)}><b>{node.id}</b><span>{node.label}</span>{node.score === 2 && <em>图片候选</em>}</button>)}</div></section>}</div>;
   const firstPanel = <>
     <div className="smart-split-compact-header">
       {mode === 'local' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ 本地配置</button> : mode === 'runninghub' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ RunningHub 配置</button> : <h2>AI 智能分层 · 框选元素</h2>}
