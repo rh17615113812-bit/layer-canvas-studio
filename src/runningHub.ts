@@ -1,7 +1,7 @@
 import type { SmartSplitBox } from './SmartSplitWorkspace';
 import { fitLocalAssetToBox } from './localComfy.ts';
 import type { LayerNode } from './types';
-import { getOverlapMasksForBox, getOverlappingBoxGroups, zIndexForFrontToBackIndex } from './boxOverlap.ts';
+import { OVERLAP_MASK_COLOR, getOverlapMasksForBox, getOverlappingBoxGroups, zIndexForFrontToBackIndex } from './boxOverlap.ts';
 import type { WorkflowPromptOverride } from './backgroundPrompt';
 
 export type RunningHubConfig = {
@@ -36,7 +36,7 @@ const cropDataUrl = (
   const context = canvas.getContext('2d');
   if (!context) throw new Error('无法创建 RunningHub 输入图片。');
   context.drawImage(image, left, top, right - left, bottom - top, 0, 0, canvas.width, canvas.height);
-  context.fillStyle = '#000000';
+  context.fillStyle = OVERLAP_MASK_COLOR;
   for (const mask of overlapMasks) {
     context.fillRect(
       (mask[0] - left) * canvas.width / (right - left),

@@ -1,3 +1,5 @@
+export const OVERLAP_MASK_COLOR = '#ff0000';
+
 export type BoxRect = [number, number, number, number];
 
 export type BoxGeometry = {
@@ -50,10 +52,9 @@ export const getOverlapMasksForBox = (
 ): BoxRect[] => {
   const current = boxes[index];
   if (!current) return [];
-  // Box order is front to back: only earlier boxes cover the current box.
+  // Box order is front to back: earlier UI and text boxes both mask lower inputs.
   return boxes
     .slice(0, index)
-    .filter(box => box.type !== 'text')
     .map((box) => intersection(current.bbox, box.bbox))
     .filter((region): region is BoxRect => region !== null);
 };

@@ -4,8 +4,9 @@ import type { LayerNode } from './types';
 import { DEFAULT_VISION_INSTRUCTION } from './smartSplit';
 import type { LocalComfyConfig } from './localComfy';
 import type { RunningHubConfig } from './runningHub';
-import { getOverlapMasksForBox, getOverlappingBoxGroups, orderBoxesByDefaultStacking, reorderGroupMembers } from './boxOverlap';
+import { OVERLAP_MASK_COLOR, getOverlapMasksForBox, getOverlappingBoxGroups, orderBoxesByDefaultStacking, reorderGroupMembers } from './boxOverlap';
 import { DEFAULT_BACKGROUND_PROMPT } from './backgroundPrompt';
+import defaultComfyWorkflow from '../workflows/qwen2.1-cutout-v2.json';
 import { hasCurrentText, recognizeTextBox } from './textRecognition';
 import type { OcrTextRegion, PixelBBox } from './coordinates';
 import { clientPointToImage } from './coordinates';
@@ -94,16 +95,18 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   const ocrMounted = useRef(true);
   useEffect(() => { ocrMounted.current = true; return () => { ocrMounted.current = false; }; }, []);
   const [instruction, setInstruction] = useState(DEFAULT_VISION_INSTRUCTION);
-  const [mode, setMode] = useState<SplitMode>('api');
+  const [mode, setMode] = useState<SplitMode>('local');
   const [configOpen, setConfigOpen] = useState(false);
   const [comfyUrl, setComfyUrl] = useState(() => localStorage.getItem('layer-canvas-comfy-url') || 'http://127.0.0.1:8188');
-  const [workflow, setWorkflow] = useState<Record<string, unknown> | undefined>();
-  const [workflowName, setWorkflowName] = useState('使用服务端配置');
-  const [inputNodeId, setInputNodeId] = useState(() => localStorage.getItem('layer-canvas-comfy-input-node') || '');
-  const [outputNodeIds, setOutputNodeIds] = useState(() => localStorage.getItem('layer-canvas-comfy-output-nodes') || '');
+  const [workflow, setWorkflow] = useState<Record<string, unknown> | undefined>(defaultComfyWorkflow);
+  const [workflowName, setWorkflowName] = useState('Qwen2.1+抠图V2 (本地).json（默认）');
+  const [inputNodeId, setInputNodeId] = useState('470');
+  const [outputNodeIds, setOutputNodeIds] = useState('485');
   const [backgroundPrompt, setBackgroundPrompt] = useState(() => localStorage.getItem('layer-canvas-background-prompt') || DEFAULT_BACKGROUND_PROMPT);
-  const [comfyBackgroundPromptNodeId, setComfyBackgroundPromptNodeId] = useState(() => localStorage.getItem('layer-canvas-comfy-background-prompt-node') || '');
-  const [comfyBackgroundPromptFieldName, setComfyBackgroundPromptFieldName] = useState(() => localStorage.getItem('layer-canvas-comfy-background-prompt-field') || 'text');
+  const [comfyBackgroundPromptNodeId, setComfyBackgroundPromptNodeId] = useState('490');
+  const [comfyBackgroundPromptFieldName, setComfyBackgroundPromptFieldName] = useState('text');
+  const [backgroundResolutionNodeId, setBackgroundResolutionNodeId] = useState('484');
+  const [backgroundResolution, setBackgroundResolution] = useState(0);
   const [runningHubWorkflowId, setRunningHubWorkflowId] = useState(() => localStorage.getItem('layer-canvas-runninghub-workflow-id') || '2101886414299426818');
   const [runningHubInputNodeId, setRunningHubInputNodeId] = useState(() => localStorage.getItem('layer-canvas-runninghub-input-node') || '');
   const [runningHubInputFieldName, setRunningHubInputFieldName] = useState(() => localStorage.getItem('layer-canvas-runninghub-input-field') || 'image');
@@ -134,7 +137,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   const scale = display.width / natural.width || 1;
   const normalized = useMemo(() => boxes.filter(box => box.id !== '__draft'), [boxes]);
   const previewGeometryKey = normalized.map((box, index) => {
-    const masks = mode === 'runninghub'
+    const masks = mode !== 'api'
       ? getOverlapMasksForBox(normalized, index).map(mask => mask.join(',')).join('|')
       : '';
     return `${box.id}:${box.bbox.join(',')}:mask=${masks}`;
@@ -157,8 +160,8 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
       if (!context) continue;
       try {
         context.drawImage(source, left, top, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
-        if (mode === 'runninghub') {
-          context.fillStyle = '#000000';
+        if (mode !== 'api') {
+          context.fillStyle = OVERLAP_MASK_COLOR;
           for (const mask of getOverlapMasksForBox(normalized, index)) {
             context.fillRect(
               (mask[0] - left) * canvas.width / cropWidth,
@@ -356,6 +359,8 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
             outputNodeIds: outputNodeIds.split(',').map(value => value.trim()).filter(Boolean),
             backgroundPromptNodeId: comfyBackgroundPromptNodeId.trim(),
             backgroundPromptFieldName: comfyBackgroundPromptFieldName.trim() || 'text',
+            backgroundResolutionNodeId: backgroundResolutionNodeId.trim(),
+            backgroundResolution,
             backgroundPrompt,
           }
         : mode === 'runninghub'
@@ -395,7 +400,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
     </fieldset>;
   const stage = <div className="smart-split-canvas-area" onContextMenu={event => event.preventDefault()} onWheel={event => { event.preventDefault(); setZoom(current => Math.max(.15, Math.min(2, current + (event.deltaY < 0 ? .1 : -.1)))); }} onPointerDown={beginDraw} onPointerMove={event => { movePan(event); moveDraw(event); moveAction(event); }} onPointerUp={() => { panning.current = null; endDraw(); endAction(); }} onPointerCancel={cancelPointer}><div className="smart-split-stage-wrap"><div ref={viewportRef} className={`smart-split-stage${panning.current ? ' is-panning' : ''}`} style={{ width: display.width, height: display.height, transform: `translate(${pan.x}px, ${pan.y}px)` }}><img ref={imageRef} src={image.source} alt={image.name} draggable={false} /><div className="smart-split-boxes">{boxes.map((box, index) => { const [left, top, right, bottom] = box.bbox; return <div key={box.id} data-box className={`smart-split-box${selectedBoxId === box.id ? ' is-selected' : ''}`} style={{ left: left * scale, top: top * scale, width: (right - left) * scale, height: (bottom - top) * scale }}><b onPointerDown={event => { setSelectedBoxId(box.id); beginAction(event, box, 'move'); }}>{box.boxNumber ?? index + 1}</b>{handles.map(direction => <i key={direction} className={`smart-split-resize handle-${direction}`} onPointerDown={event => { setSelectedBoxId(box.id); beginAction(event, box, 'resize', direction); }} />)}</div>; })}</div></div></div></div>;
   const backgroundPromptEditor = <label className="smart-split-background-prompt"><span>整体背景分离提示词（仅用于整图请求）</span><small>普通区域拆分不传提示词，使用工作流内默认提示词。</small><textarea value={backgroundPrompt} onChange={event => setBackgroundPrompt(event.target.value)} /><button type="button" onClick={() => setBackgroundPrompt(DEFAULT_BACKGROUND_PROMPT)}>恢复默认提示词</button></label>;
-  const localSettings = <div className="smart-split-local-settings"><label><span>ComfyUI 地址</span><input value={comfyUrl} onChange={event => setComfyUrl(event.target.value)} placeholder="http://127.0.0.1:8188" /></label><label><span>API 工作流 JSON</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadWorkflow(event.target.files?.[0])} /><b>{workflowName}</b></span></label><label><span>输入节点 ID（可选）</span><input value={inputNodeId} onChange={event => setInputNodeId(event.target.value)} placeholder="自动查找 LoadImage" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={outputNodeIds} onChange={event => setOutputNodeIds(event.target.value)} placeholder="自动收集所有图片输出" /></label><label><span>背景提示词节点 ID（必填）</span><input value={comfyBackgroundPromptNodeId} onChange={event => setComfyBackgroundPromptNodeId(event.target.value)} placeholder="API 工作流中的文本编码节点 ID" /></label><label><span>提示词字段名</span><input value={comfyBackgroundPromptFieldName} onChange={event => setComfyBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label>{backgroundPromptEditor}</div>;
+  const localSettings = <div className="smart-split-local-settings"><label><span>ComfyUI 地址</span><input value={comfyUrl} onChange={event => setComfyUrl(event.target.value)} placeholder="http://127.0.0.1:8188" /></label><label><span>API 工作流 JSON</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadWorkflow(event.target.files?.[0])} /><b>{workflowName}</b></span></label><label><span>输入节点 ID（可选）</span><input value={inputNodeId} onChange={event => setInputNodeId(event.target.value)} placeholder="自动查找 LoadImage" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={outputNodeIds} onChange={event => setOutputNodeIds(event.target.value)} placeholder="自动收集所有图片输出" /></label><fieldset className="smart-split-background-config"><legend>整体背景拆分独立参数</legend><label><span>背景提示词节点 ID（必填）</span><input value={comfyBackgroundPromptNodeId} onChange={event => setComfyBackgroundPromptNodeId(event.target.value)} placeholder="API 工作流中的文本编码节点 ID" /></label><label><span>提示词字段名</span><input value={comfyBackgroundPromptFieldName} onChange={event => setComfyBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label><label><span>文本编码节点 ID</span><input value={backgroundResolutionNodeId} onChange={event => setBackgroundResolutionNodeId(event.target.value)} placeholder="484" /></label><label><span>背景 resolution</span><input type="number" min="0" value={backgroundResolution} onChange={event => setBackgroundResolution(Number(event.target.value))} /></label>{backgroundPromptEditor}<small>仅整图背景请求覆盖这些参数；普通区域使用工作流原有提示词和 resolution。</small></fieldset></div>;
   const filteredRunningHubNodes = runningHubNodes.filter(node => `${node.id} ${node.label}`.toLowerCase().includes(runningHubNodeSearch.trim().toLowerCase()));
   const chooseRunningHubNode = (node: RunningHubNodeCandidate) => { setRunningHubInputNodeId(node.id); if (node.fieldName) setRunningHubInputFieldName(node.fieldName); };
   const runningHubSettings = <div className="smart-split-local-settings smart-split-runninghub-settings"><p className="smart-split-config-note">此页调用 RunningHub ComfyUI 工作流 API。API Key 只从本机服务端 .env.local 读取，不会保存到浏览器。</p><label className="smart-split-config-upload"><span>工作流节点映射 JSON（可选）</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadRunningHubWorkflow(event.target.files?.[0])} /><b>{runningHubWorkflowName}</b></span></label><label><span>工作流 API ID</span><input value={runningHubWorkflowId} onChange={event => setRunningHubWorkflowId(event.target.value)} placeholder="2101886414299426818" /></label><label><span>图片输入节点 ID（必填）</span><input value={runningHubInputNodeId} onChange={event => setRunningHubInputNodeId(event.target.value)} placeholder="上传 JSON 后自动识别，亦可手动填写" /></label><label><span>图片字段名</span><input value={runningHubInputFieldName} onChange={event => setRunningHubInputFieldName(event.target.value)} placeholder="image" /></label><label><span>背景提示词节点 ID（必填）</span><input value={runningHubBackgroundPromptNodeId} onChange={event => setRunningHubBackgroundPromptNodeId(event.target.value)} placeholder="工作流中的文本提示词节点 ID" /></label><label><span>提示词字段名</span><input value={runningHubBackgroundPromptFieldName} onChange={event => setRunningHubBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={runningHubOutputNodeIds} onChange={event => setRunningHubOutputNodeIds(event.target.value)} placeholder="留空取第一个图片结果" /></label><label><span>运行实例</span><select value={runningHubInstanceType} onChange={event => setRunningHubInstanceType(event.target.value as 'default' | 'plus' | 'ultra')}><option value="default">default · 24G</option><option value="plus">plus · 48G</option><option value="ultra">ultra · 84G</option></select></label><div className="smart-split-runninghub-options"><label><input type="checkbox" checked={runningHubAddMetadata} onChange={event => setRunningHubAddMetadata(event.target.checked)} />输出附带工作流元数据</label><label><input type="checkbox" checked={runningHubPersonalQueue} onChange={event => setRunningHubPersonalQueue(event.target.checked)} />使用个人独占队列</label></div>{backgroundPromptEditor}{runningHubNodes.length > 0 && <section className="smart-split-node-picker"><header><b>识别到 {runningHubNodes.length} 个节点</b><input value={runningHubNodeSearch} onChange={event => setRunningHubNodeSearch(event.target.value)} placeholder="搜索节点 ID 或名称" /></header><div>{filteredRunningHubNodes.map(node => <button type="button" className={node.id === runningHubInputNodeId ? 'active' : ''} key={node.id} onClick={() => chooseRunningHubNode(node)}><b>{node.id}</b><span>{node.label}</span>{node.score === 2 && <em>图片候选</em>}</button>)}</div></section>}</div>;

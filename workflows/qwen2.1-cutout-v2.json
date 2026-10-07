@@ -1,0 +1,194 @@
+{
+  "13": {
+    "inputs": {
+      "aspect_ratio": "1:1 (Square)",
+      "megapixels": 2,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "分辨率选择器"
+    }
+  },
+  "470": {
+    "inputs": {
+      "image": "huaban-6697387063.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "476": {
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "477": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_bf16.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "478": {
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "479": {
+    "inputs": {
+      "width": [
+        "13",
+        0
+      ],
+      "height": [
+        "13",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "480": {
+    "inputs": {
+      "samples": [
+        "481",
+        0
+      ],
+      "vae": [
+        "478",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "481": {
+    "inputs": {
+      "seed": 1041873088965548,
+      "steps": 30,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "483",
+        0
+      ],
+      "positive": [
+        "484",
+        0
+      ],
+      "negative": [
+        "484",
+        1
+      ],
+      "latent_image": [
+        "482",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "482": {
+    "inputs": {
+      "switch": true,
+      "on_false": [
+        "479",
+        0
+      ],
+      "on_true": [
+        "484",
+        2
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "是否保留原图大小"
+    }
+  },
+  "483": {
+    "inputs": {
+      "device": "auto",
+      "dtype": "default",
+      "model": [
+        "476",
+        0
+      ]
+    },
+    "class_type": "QwenImage21Cache",
+    "_meta": {
+      "title": "Qwen Image 2.1 缓存"
+    }
+  },
+  "484": {
+    "inputs": {
+      "prompt": [
+        "490",
+        0
+      ],
+      "negative_prompt": "",
+      "resolution": 512,
+      "clip": [
+        "477",
+        0
+      ],
+      "images.image_1": [
+        "470",
+        0
+      ],
+      "vae": [
+        "478",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImage21",
+    "_meta": {
+      "title": "文本编码 Qwen Image 2.1"
+    }
+  },
+  "485": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "480",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "490": {
+    "inputs": {
+      "text": "提取当前图中的主体UI元素，并将其输出为干净、独立的游戏 UI 素材。\n去掉图中的红色填充并使补全部分与周围可见部分在造型、边框、填充、渐变、阴影、高光和质感上完全一致，像原图中本来就存在的一部分。 \n \n严格保持 UI 元素原有的样式和比例不变。输入图像是唯一的风格参考。不重新设计、不改变风格、不重新绘制，也不要重新解释该素材。\n\n提升素材清晰度，修复模糊，同时保持原有样式不变。 \n \n移除背景、文字、其他 UI 元素、遮挡物以及残留杂边，使最终画面中只保留目标 UI 元素。\n \n带有alpha通道的rmbg背景透明。"
+    },
+    "class_type": "Text Multiline",
+    "_meta": {
+      "title": "Text Multiline"
+    }
+  }
+}

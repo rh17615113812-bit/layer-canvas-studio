@@ -1,3 +1,4 @@
+import { backgroundComfyWorkflow } from '../src/comfyWorkflow.ts';
 import Konva from 'konva';
 import { fitTextLayer } from '../src/textLayout.ts';
 import assert from 'node:assert/strict';
@@ -197,9 +198,18 @@ test('version 1 workspace migrates without losing images; unused assets are remo
   await clearWorkspace();
 });
 
-test('ComfyUI and RunningHub preserve pixels under text without submitting it as an image layer', async () => {
+test('background workflow overrides reject missing nodes and invalid resolution without mutating inputs', () => {
+  const workflow = { '484': { inputs: { resolution: 512 } } };
+  const background = backgroundComfyWorkflow(workflow, '484', 0);
+  assert.equal((background!['484'] as typeof workflow['484']).inputs.resolution, 0);
+  assert.equal(workflow['484'].inputs.resolution, 512);
+  assert.throws(() => backgroundComfyWorkflow(workflow, 'missing', 0), /resolution/);
+  assert.throws(() => backgroundComfyWorkflow(workflow, '484', NaN), /非负数/);
+});
+
+test('ComfyUI and RunningHub fill upper text intersections red without submitting text as an image layer', async () => {
   const boxes = [
-    { id: 'text', name: 'Text', type: 'text' as const, shouldSplit: false, bbox: [0, 0, 2, 2] as [number, number, number, number] },
+    { id: 'text', name: 'Text', type: 'text' as const, shouldSplit: false, bbox: [0, 0, 5, 2] as [number, number, number, number] },
     { id: 'ui', name: 'UI', type: 'ui' as const, bbox: [0, 0, 6, 4] as [number, number, number, number] },
   ];
   const originalFetch = globalThis.fetch;
@@ -210,10 +220,11 @@ test('ComfyUI and RunningHub preserve pixels under text without submitting it as
         const request = JSON.parse(String(init?.body));
         if (!inputs.length) {
           assert.deepEqual(request.promptOverride, { nodeId: '1', fieldName: 'text', prompt: 'background' });
+          if (mode === 'local') assert.equal(request.workflow['484'].inputs.resolution, 0);
         } else {
           assert.equal(Object.hasOwn(request, 'promptOverride'), false);
           assert.equal(Object.hasOwn(request, 'prompt'), false);
-          if (mode === 'local') assert.equal(request.workflow['1'].inputs.text, 'workflow default');
+          if (mode === 'local') { assert.equal(request.workflow['1'].inputs.text, 'workflow default'); assert.equal(request.workflow['484'].inputs.resolution, 512); }
         }
         if (mode === 'runninghub') {
           assert.equal(Object.hasOwn(request.config, 'backgroundPrompt'), false);
@@ -223,16 +234,18 @@ test('ComfyUI and RunningHub preserve pixels under text without submitting it as
         inputs.push(request.image);
         return Response.json(mode === 'local' ? { images: [{ base64: source.split(',')[1], mime: 'image/png' }] } : { imageUrl: source });
       };
-      const config = { backgroundPromptNodeId: '1', backgroundPrompt: 'background', comfyUrl: 'http://127.0.0.1:8188', workflow: { '1': { inputs: { text: 'workflow default' } } } };
+      const config = { backgroundPromptNodeId: '1', backgroundPrompt: 'background', comfyUrl: 'http://127.0.0.1:8188', backgroundResolutionNodeId: '484', backgroundResolution: 0, workflow: { '1': { inputs: { text: 'workflow default' } }, '484': { inputs: { resolution: 512 } } } };
       const result = mode === 'local'
         ? await localComfyLayerSplit(source, selectSplittableBoxes(boxes), config, boxes)
         : await runningHubLayerSplit(source, selectSplittableBoxes(boxes), config, boxes);
       assert.equal(inputs.length, 2); // One background plus one UI crop, no text job.
       assert.equal(config.workflow['1'].inputs.text, 'workflow default');
+      assert.equal(config.workflow['484'].inputs.resolution, 512);
       assert.equal(result.filter(layer => layer.kind === 'image').length, 2);
       const croppedImage = new Image(); croppedImage.src = inputs[1]; await croppedImage.decode();
       const cropped = createCanvas(6, 4); cropped.getContext('2d').drawImage(croppedImage, 0, 0);
       assert.deepEqual([...cropped.getContext('2d').getImageData(0, 0, 1, 1).data], [255, 0, 0, 255]);
+      assert.deepEqual([...cropped.getContext('2d').getImageData(4, 0, 1, 1).data], [255, 0, 0, 255]);
       assert.deepEqual([...cropped.getContext('2d').getImageData(4, 2, 1, 1).data], [0, 255, 0, 255]);
     }
   } finally { globalThis.fetch = originalFetch; }

@@ -1,7 +1,8 @@
 import type { SmartSplitBox } from './SmartSplitWorkspace';
 import type { LayerNode } from './types';
-import { getOverlapMasksForBox } from './boxOverlap.ts';
+import { OVERLAP_MASK_COLOR, getOverlapMasksForBox } from './boxOverlap.ts';
 import type { WorkflowPromptOverride } from './backgroundPrompt';
+import { backgroundComfyWorkflow } from './comfyWorkflow.ts';
 
 export type LocalComfyConfig = {
   comfyUrl: string;
@@ -11,6 +12,8 @@ export type LocalComfyConfig = {
   backgroundPromptNodeId?: string;
   backgroundPromptFieldName?: string;
   backgroundPrompt?: string;
+  backgroundResolutionNodeId?: string;
+  backgroundResolution?: number;
 };
 
 type Size = { width: number; height: number };
@@ -62,7 +65,7 @@ const cropDataUrl = (
     width,
     height,
   );
-  context.fillStyle = '#000000';
+  context.fillStyle = OVERLAP_MASK_COLOR;
   for (const mask of overlapMasks) {
     context.fillRect(
       (mask[0] - left) * width / (right - left),
@@ -90,6 +93,7 @@ export async function localComfyLayerSplit(
   if (!promptNodeId) throw new Error('请在本地拆分配置中填写背景提示词节点 ID。');
   if (!prompt) throw new Error('背景分离提示词不能为空。');
   const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
+  const backgroundWorkflow = backgroundComfyWorkflow(config.workflow, config.backgroundResolutionNodeId, config.backgroundResolution ?? 0);
   const image = await loadImage(source);
   const results: LayerNode[] = [];
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
@@ -100,7 +104,7 @@ export async function localComfyLayerSplit(
     body: JSON.stringify({
       image: source,
       comfyUrl: config.comfyUrl,
-      workflow: config.workflow,
+      workflow: backgroundWorkflow,
       inputNodeId: config.inputNodeId,
       outputNodeIds: config.outputNodeIds,
       promptOverride,

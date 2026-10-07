@@ -10,6 +10,7 @@ import {
   Transformer,
 } from "react-konva";
 import Konva from "konva";
+import { createAlignmentIcon } from "./alignmentIcons";
 import { editorReducer } from "./documentHistory";
 import { extractSelectionCanvas } from "./bitmapGeometry";
 import { fitTextLayer } from "./textLayout";
@@ -77,7 +78,7 @@ const addSplitComparisonArtboard = (
   resultLayers: LayerNode[],
   imageWidth: number,
   imageHeight: number,
-  ids: { artboard: Artboard; background: string },
+  ids: { artboard: Artboard },
 ) => {
   const artboard = ids.artboard;
   const baseZ = Math.max(-1, ...current.layers.map((layer) => layer.zIndex)) + 1;
@@ -85,19 +86,6 @@ const addSplitComparisonArtboard = (
   const scaleY = sourceLayer.height / imageHeight;
   const offsetX = sourceLayer.x - sourceArtboard.x;
   const offsetY = sourceLayer.y - sourceArtboard.y;
-  const background: LayerNode = {
-    ...sourceLayer,
-    id: ids.background,
-    name: `${sourceLayer.name} · 原图副本`,
-    parentId: null,
-    artboardId: artboard.id,
-    x: artboard.x + offsetX,
-    y: artboard.y + offsetY,
-    zIndex: baseZ,
-    visible: true,
-    locked: true,
-    boxSelected: false,
-  };
   const placed = resultLayers.map(layer => {
     const textPlacement = layer.kind === "text" ? placeTextLayers([layer], sourceLayer, imageWidth, imageHeight)[0] : undefined;
     return {
@@ -117,7 +105,7 @@ const addSplitComparisonArtboard = (
       ...current,
       canvas: documentBounds(artboards),
       artboards,
-      layers: [...current.layers, background, ...placed],
+      layers: [...current.layers, ...placed],
     },
     artboard,
     placed,
@@ -892,6 +880,15 @@ export default function App() {
     change: DocumentState | ((d: DocumentState) => DocumentState),
     recordHistory = true,
   ) => dispatchEditor({ type: "document", sceneId: scene.id, pageId: page.id, change, recordHistory });
+  const removedSplitCopies = useRef(new Set<string>());
+  useEffect(() => {
+    const pageKey = `${scene.id}:${page.id}`;
+    if (removedSplitCopies.current.has(pageKey)) return;
+    const copyIds = new Set(doc.layers.filter(layer => layer.kind === "image" && layer.locked && layer.parentId === null && layer.name.endsWith(" · 原图副本")).map(layer => layer.id));
+    if (!copyIds.size) return;
+    removedSplitCopies.current.add(pageKey);
+    setDoc(current => ({ ...current, layers: current.layers.filter(layer => !copyIds.has(layer.id)) }));
+  }, [scene.id, page.id, doc.layers]);
   useEffect(() => {
     if (!doc.layers.some((layer) => layer.kind === "group" && !layer.boundsMode))
       return;
@@ -1429,11 +1426,12 @@ export default function App() {
       };
     setView({ z, x: point.x - world.x * z, y: point.y - world.y * z });
   };
-  const field = (label: string, key: keyof LayerNode, value: number) => (
+  const field = (label: string, key: keyof LayerNode, value: number, inline = false) => (
     <label>
-      {label}
+      {inline ? <span className="field-inline-label">{label}</span> : label}
       <input
         type="number"
+        aria-label={label}
         value={value}
         onChange={(e) => {
           if (!selected) return;
@@ -1685,7 +1683,7 @@ export default function App() {
       resultLayers,
       imageWidth,
       imageHeight,
-      { artboard: comparisonArtboard, background: uid() },
+      { artboard: comparisonArtboard },
     ).document);
     setSelectedArtboardId(comparisonArtboard.id);
     setSelectedId(null);
@@ -2807,21 +2805,22 @@ export default function App() {
       .forEach((item) => item.remove());
     const alignments = document.createElement("div");
     alignments.className = "position-alignments";
-    const actions: Array<[string, string, Parameters<typeof alignLayers>[0]]> =
+    const actions: Array<[string, Parameters<typeof alignLayers>[0]]> =
       [
-        ["左对齐", "┤", "left"],
-        ["水平居中", "╫", "centerX"],
-        ["右对齐", "├", "right"],
-        ["水平等距", "↔", "spaceX"],
-        ["顶对齐", "⊥", "top"],
-        ["垂直居中", "═", "centerY"],
-        ["底对齐", "⊤", "bottom"],
-        ["垂直等距", "↕", "spaceY"],
+        ["左对齐", "left"],
+        ["水平居中", "centerX"],
+        ["右对齐", "right"],
+        ["顶对齐", "top"],
+        ["垂直居中", "centerY"],
+        ["底对齐", "bottom"],
+        ["水平等距", "spaceX"],
+        ["垂直等距", "spaceY"],
       ];
-    actions.forEach(([title, icon, mode]) => {
+    actions.forEach(([title, mode]) => {
       const button = document.createElement("button");
       button.title = title;
-      button.textContent = icon;
+      button.setAttribute("aria-label", title);
+      button.append(createAlignmentIcon(mode));
       button.addEventListener("click", () => alignLayers(mode));
       alignments.append(button);
     });
@@ -3355,11 +3354,11 @@ export default function App() {
                 </div>
                 <section>
                   <h4>位置（画板坐标）</h4>
-                  <div className="property-grid">
-                    {field("X", "x", selected.x - (activeArtboard?.x ?? 0))}
-                    {field("Y", "y", selected.y - (activeArtboard?.y ?? 0))}
-                    {field("旋转", "rotation", selected.rotation || 0)}
-                    {field("层级", "zIndex", selected.zIndex)}
+                  <div className="property-grid position-field-grid">
+                    {field("X", "x", selected.x - (activeArtboard?.x ?? 0), true)}
+                    {field("Y", "y", selected.y - (activeArtboard?.y ?? 0), true)}
+                    {field("旋转", "rotation", selected.rotation || 0, true)}
+                    {field("层级", "zIndex", selected.zIndex, true)}
                   </div>
                 </section>
                 <section>

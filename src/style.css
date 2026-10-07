@@ -102,3 +102,11 @@ main:has(.inspector-empty){grid-template-columns:250px minmax(0,1fr)}.inspector:
 .smart-split-overlay.is-busy .smart-split-canvas-area{pointer-events:none}
 .smart-split-stage{border:0;outline:1px solid #334334;flex:0 0 auto}
 .smart-split-tencent-config{margin:8px 0}.smart-split-tencent-config>button,.smart-split-tencent-config fieldset>button{padding:7px 12px;border:1px solid #354534;border-radius:6px;color:#e5eee1}.smart-split-tencent-config fieldset{display:grid;gap:8px;margin:8px 0;border:1px solid #354534;border-radius:6px}.smart-split-tencent-config label{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center}.smart-split-tencent-config input{min-width:0;background:#0d110d;border:1px solid #3a4939;border-radius:4px;padding:7px;color:#e5eee1}
+
+.position-alignments button{display:flex;align-items:center;justify-content:center;color:#a4a4a4}.position-alignments svg{display:block;flex-shrink:0}
+
+.position-field-grid label{position:relative;display:block}.position-field-grid label input{padding-left:44px}.position-field-grid label:nth-child(-n+2) input{padding-left:25px}
+
+.position-alignments{grid-template-columns:repeat(8,minmax(0,1fr))}.position-alignments button{min-width:0;padding:0}
+
+.smart-split-background-config{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:10px;border:1px solid #3a4939;border-radius:7px;padding:12px;margin:8px 0}.smart-split-background-config legend{color:#b6f04a;font-size:12px}.smart-split-background-config>small{grid-column:1/-1;color:#98a795}
