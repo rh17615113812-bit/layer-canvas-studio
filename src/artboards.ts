@@ -10,6 +10,18 @@ export const nextArtboardOrigin = (artboards: Artboard[]) => ({
   y: 0,
 });
 
+export const fitArtboardView = (
+  artboard: Pick<Artboard, 'x' | 'y' | 'width' | 'height'>,
+  viewport: { width: number; height: number },
+) => {
+  const z = Math.min(Math.max(1, viewport.width - 140) / artboard.width, Math.max(1, viewport.height - 140) / artboard.height, 1);
+  return {
+    z,
+    x: (viewport.width - artboard.width * z) / 2 - artboard.x * z,
+    y: (viewport.height - artboard.height * z) / 2 - artboard.y * z,
+  };
+};
+
 export const layerToArtboardCoordinates = (layer: LayerNode, artboard: Artboard) => ({
   x: layer.x - artboard.x,
   y: layer.y - artboard.y,

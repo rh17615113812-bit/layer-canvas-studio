@@ -3,7 +3,9 @@ dist/
 *.psd
 .env
 .env.local
+.env.local.tencent.tmp
 work/
 outputs/
 *.log
 logs/
+ocr-data/

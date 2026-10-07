@@ -3,6 +3,7 @@ export type BoxRect = [number, number, number, number];
 export type BoxGeometry = {
   id: string;
   bbox: BoxRect;
+  type?: 'ui' | 'text';
 };
 
 /** Default front-to-back order: smaller boxes stay above larger boxes. */
@@ -52,6 +53,7 @@ export const getOverlapMasksForBox = (
   // Box order is front to back: only earlier boxes cover the current box.
   return boxes
     .slice(0, index)
+    .filter(box => box.type !== 'text')
     .map((box) => intersection(current.bbox, box.bbox))
     .filter((region): region is BoxRect => region !== null);
 };

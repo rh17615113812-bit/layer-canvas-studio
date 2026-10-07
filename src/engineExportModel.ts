@@ -1,3 +1,4 @@
+import { fitTextLayer } from './textLayout.ts';
 import type { DocumentState, LayerNode } from './types';
 import { createArtboardDocument, createGroupDocument } from './artboards.ts';
 
@@ -5,6 +6,7 @@ export type EngineLayer = Pick<LayerNode, 'id' | 'name' | 'kind' | 'parentId' | 
 export type EngineLayout = { version: 1; name: string; width: number; height: number; layers: EngineLayer[] };
 
 export function buildEngineLayout(document: DocumentState, artboardId?: string, groupId?: string): { output: DocumentState; layout: EngineLayout } {
+  document = { ...document, layers: document.layers.map(fitTextLayer) };
   const output = groupId ? createGroupDocument(document, groupId) : createArtboardDocument(document, artboardId);
   const artboard = output.artboards[0];
   const supported = output.layers.filter(layer => layer.kind === 'group' || layer.kind === 'image' && !!layer.source || layer.kind === 'text');

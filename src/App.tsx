@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Group,
@@ -10,11 +10,15 @@ import {
   Transformer,
 } from "react-konva";
 import Konva from "konva";
-import { exportJson } from "./exports";
-import PsdExportDialog from "./PsdExportDialog";
-import { exportEngineZip } from "./engineExports";
+import { editorReducer } from "./documentHistory";
+import { extractSelectionCanvas } from "./bitmapGeometry";
+import { fitTextLayer } from "./textLayout";
+import { applyTextOverlay, placeTextLayers, textLayersFromBoxes } from "./textRecognition";
+const PsdExportDialog = lazy(() => import("./PsdExportDialog"));
+const exportJson = async (...args: Parameters<typeof import("./exports").exportJson>) => (await import("./exports")).exportJson(...args);
+const exportEngineZip = async (...args: Parameters<typeof import("./engineExports").exportEngineZip>) => (await import("./engineExports")).exportEngineZip(...args);
 import { seedreamLayerSplit } from "./seedream";
-import { importPsd } from "./psdImport";
+const importPsd = async (file: File) => (await import("./psdImport")).importPsd(file);
 import SmartSplitWorkspace, {
   type SmartSplitBox,
   type SplitMode,
@@ -32,6 +36,7 @@ import {
   artboardContainingPoint,
   artboardForLayer,
   documentBounds,
+  fitArtboardView,
   nextArtboardOrigin,
   removeArtboard,
   resizeArtboard,
@@ -93,15 +98,19 @@ const addSplitComparisonArtboard = (
     locked: true,
     boxSelected: false,
   };
-  const placed = resultLayers.map((layer) => ({
-    ...layer,
-    artboardId: artboard.id,
-    x: artboard.x + offsetX + layer.x * scaleX,
-    y: artboard.y + offsetY + layer.y * scaleY,
-    width: layer.width * scaleX,
-    height: layer.height * scaleY,
-    zIndex: baseZ + 1 + Math.max(0, layer.zIndex),
-  }));
+  const placed = resultLayers.map(layer => {
+    const textPlacement = layer.kind === "text" ? placeTextLayers([layer], sourceLayer, imageWidth, imageHeight)[0] : undefined;
+    return {
+      ...layer,
+      ...(textPlacement ?? {}),
+      artboardId: artboard.id,
+      x: textPlacement ? artboard.x + textPlacement.x - sourceArtboard.x : artboard.x + offsetX + layer.x * scaleX,
+      y: textPlacement ? artboard.y + textPlacement.y - sourceArtboard.y : artboard.y + offsetY + layer.y * scaleY,
+      width: textPlacement?.width ?? layer.width * scaleX,
+      height: textPlacement?.height ?? layer.height * scaleY,
+      zIndex: baseZ + 1 + (layer.kind === "text" ? Math.max(0, ...resultLayers.map(item => item.zIndex)) + 1 : 0) + Math.max(0, layer.zIndex),
+    };
+  });
   const artboards = [...current.artboards, artboard];
   return {
     document: {
@@ -222,7 +231,7 @@ function Sprite({
   layer: LayerNode;
   selected: boolean;
   keepRatio: boolean;
-  select: () => void;
+  select: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   patch: (v: Partial<LayerNode>) => void;
   drop: (x: number, y: number) => void;
   sync: (id: string, node: Konva.Image) => void;
@@ -233,7 +242,14 @@ function Sprite({
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
   ) => {
     event.cancelBubble = true;
-    if (!selected) select();
+    const pointer = event.evt as MouseEvent;
+    const modified = pointer.ctrlKey || pointer.metaKey || pointer.shiftKey;
+    if (modified) {
+      select(event);
+      event.target.stopDrag();
+    } else if (!selected) {
+      select(event);
+    }
   };
   if (!layer.visible) return null;
   if (layer.kind === "selection")
@@ -249,7 +265,6 @@ function Sprite({
         draggable={!layer.locked}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
-        onClick={select}
         onDragStart={(e) => {
           e.cancelBubble = true;
         }}
@@ -262,13 +277,14 @@ function Sprite({
   if (layer.kind === "group") return null;
   if (layer.kind === "text") {
     const style = layer.textStyle;
+    const fitted = fitTextLayer(layer);
     return (
       <KText
         id={layer.id}
         x={layer.x}
         y={layer.y}
-        width={layer.width}
-        height={layer.height}
+        width={fitted.width}
+        height={fitted.height}
         rotation={layer.rotation || 0}
         opacity={layer.opacity ?? 1}
         text={layer.textContent || ""}
@@ -282,11 +298,10 @@ function Sprite({
         verticalAlign={style?.verticalAlign || "top"}
         lineHeight={style?.lineHeight || 1.2}
         letterSpacing={style?.letterSpacing || 0}
-        wrap="word"
+        wrap="none"
         draggable={!layer.locked}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
-        onClick={select}
         onDragStart={(e) => { e.cancelBubble = true; }}
         onDragEnd={(e) => {
           e.cancelBubble = true;
@@ -310,7 +325,6 @@ function Sprite({
         draggable={!layer.locked}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
-        onClick={select}
         onDragStart={(e) => {
           e.cancelBubble = true;
         }}
@@ -470,7 +484,7 @@ function CanvasGroupFrame({
   children: LayerNode[];
   selected: boolean;
   viewScale: number;
-  select: () => void;
+  select: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   move: (dx: number, dy: number) => void;
   resize: (bounds: Bounds) => void;
 }) {
@@ -494,6 +508,19 @@ function CanvasGroupFrame({
     frame.current?.position({ x: group.x + dx, y: group.y + dy });
     transformer.current?.forceUpdate();
     frame.current?.getLayer()?.batchDraw();
+  };
+  const selectBeforeDrag = (
+    event: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+  ) => {
+    event.cancelBubble = true;
+    const pointer = event.evt as MouseEvent;
+    const modified = pointer.ctrlKey || pointer.metaKey || pointer.shiftKey;
+    if (modified) {
+      select(event);
+      event.target.stopDrag();
+    } else if (!selected) {
+      select(event);
+    }
   };
   return (
     <>
@@ -523,13 +550,10 @@ function CanvasGroupFrame({
         x={group.x}
         y={titleY}
         draggable={!group.locked}
-        onClick={(event) => {
-          event.cancelBubble = true;
-          select();
-        }}
+        onMouseDown={selectBeforeDrag}
+        onTouchStart={selectBeforeDrag}
         onDragStart={(event) => {
           event.cancelBubble = true;
-          select();
         }}
         onDragMove={(event) => {
           event.cancelBubble = true;
@@ -587,16 +611,17 @@ type Bounds = { x: number; y: number; width: number; height: number };
 export default function App() {
   const file = useRef<HTMLInputElement>(null),
     host = useRef<HTMLDivElement>(null),
+    importedArtboardToFocus = useRef<string | null>(null),
     suppressTreeClick = useRef(false),
     treeSelectionAnchor = useRef<string | null>(null),
-    history = useRef(
-      new Map<string, { undo: DocumentState[]; redo: DocumentState[] }>(),
-    ),
     saveTimer = useRef<number | undefined>(undefined),
     liveLabels = useRef(new Map<string, Konva.Group>()),
     layerViewMode = useRef<"layers" | "resources">("layers");
   const initial = { id: uid(), name: "场景 1", pages: [newPage("Page 1")] };
-  const [scenes, setScenes] = useState<SceneState[]>([initial]),
+  const [editor, dispatchEditor] = useReducer(editorReducer, { scenes: [initial], histories: {} });
+  const scenes = editor.scenes;
+  const setScenes = (change: SceneState[] | ((scenes: SceneState[]) => SceneState[]), resetHistory = false) => dispatchEditor({ type: "scenes", change, resetHistory });
+  const
     [sceneId, setSceneId] = useState(initial.id),
     [pageId, setPageId] = useState(initial.pages[0].id),
     [selectedId, setSelectedId] = useState<string | null>(null),
@@ -677,11 +702,11 @@ export default function App() {
   }, [workspaceReady, scenes, sceneId, pageId, view, collapsedGroups, collapsedArtboards]);
   const resetSavedWorkspace = () => {
     if (!window.confirm("清除浏览器保存的工作区，并恢复为空白画布吗？此操作不会删除已导出的文件。")) return;
+    window.clearTimeout(saveTimer.current);
     void clearWorkspace()
       .then(() => {
         const next = { id: uid(), name: "场景 1", pages: [newPage("Page 1")] };
-        history.current.clear();
-        setScenes([next]);
+        setScenes([next], true);
         setSceneId(next.id);
         setPageId(next.pages[0].id);
         setSelectedId(null);
@@ -781,12 +806,28 @@ export default function App() {
     layer: LayerNode,
     modifiers?: { toggle?: boolean; range?: boolean },
   ) => {
-    if (modifiers?.range && treeSelectionAnchor.current) {
-      const visibleIds = visibleTreeLayerIds();
-      setLayerSelection(
-        rangeLayerSelection(visibleIds, treeSelectionAnchor.current, layer.id),
-        layer.id,
-      );
+    if (modifiers?.range) {
+      if (treeSelectionAnchor.current) {
+        const visibleIds = visibleTreeLayerIds();
+        setLayerSelection(
+          rangeLayerSelection(visibleIds, treeSelectionAnchor.current, layer.id),
+          layer.id,
+        );
+        return;
+      }
+      const currentIds =
+        selected?.kind === "group" && !contentSelectionIds.includes(selected.id)
+          ? [selected.id]
+          : contentSelectionIds.length > 1
+            ? contentSelectionIds
+            : selectedId
+              ? [selectedId]
+              : [];
+      const nextIds = currentIds.includes(layer.id)
+        ? currentIds
+        : [...currentIds, layer.id];
+      treeSelectionAnchor.current = selectedId ?? layer.id;
+      setLayerSelection(nextIds, layer.id);
       return;
     }
     if (modifiers?.toggle) {
@@ -840,48 +881,17 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!file.current) return;
-    file.current.accept = "image/*,.psd,application/octet-stream";
-    file.current.multiple = true;
-    const chooseFiles = (event: Event) => {
-      const input = event.currentTarget as HTMLInputElement;
-      event.stopImmediatePropagation();
-      Array.from(input.files || []).forEach(upload);
-      input.value = "";
-    };
-    file.current.addEventListener("change", chooseFiles, true);
-    return () => file.current?.removeEventListener("change", chooseFiles, true);
-  }, [doc.layers]);
+    const artboard = doc.artboards.find(item => item.id === importedArtboardToFocus.current);
+    // Selecting the imported layer opens the inspector before ResizeObserver updates size.
+    const viewport = { width: host.current?.clientWidth ?? size.width, height: host.current?.clientHeight ?? size.height };
+    if (!artboard || viewport.width <= 0 || viewport.height <= 0) return;
+    importedArtboardToFocus.current = null;
+    setView(fitArtboardView(artboard, viewport));
+  }, [doc.artboards, size]);
   const setDoc = (
     change: DocumentState | ((d: DocumentState) => DocumentState),
     recordHistory = true,
-  ) =>
-    setScenes((old) =>
-      old.map((s) =>
-        s.id !== scene.id
-          ? s
-          : {
-              ...s,
-              pages: s.pages.map((p) => {
-                if (p.id !== page.id) return p;
-                const next =
-                  typeof change === "function" ? change(p.document) : change;
-                if (
-                  recordHistory &&
-                  JSON.stringify(next) !== JSON.stringify(p.document)
-                ) {
-                  const key = `${s.id}:${p.id}`,
-                    stack = history.current.get(key) || { undo: [], redo: [] };
-                  stack.undo.push(structuredClone(p.document));
-                  if (stack.undo.length > 100) stack.undo.shift();
-                  stack.redo = [];
-                  history.current.set(key, stack);
-                }
-                return { ...p, document: next };
-              }),
-            },
-      ),
-    );
+  ) => dispatchEditor({ type: "document", sceneId: scene.id, pageId: page.id, change, recordHistory });
   useEffect(() => {
     if (!doc.layers.some((layer) => layer.kind === "group" && !layer.boundsMode))
       return;
@@ -951,7 +961,7 @@ export default function App() {
       return {
         ...d,
         layers: d.layers.map((layer) =>
-          layer.id === layerId ? { ...layer, ...value } : layer,
+          layer.id === layerId ? fitTextLayer({ ...layer, ...value }) : layer,
         ),
       };
     });
@@ -1042,19 +1052,12 @@ export default function App() {
     );
   };
   const restoreHistory = (direction: "undo" | "redo") => {
-    const key = `${scene.id}:${page.id}`,
-      stack = history.current.get(key);
-    if (!stack?.[direction].length)
-      return setNotice(
-        direction === "undo" ? "没有可撤销的操作。" : "没有可重做的操作。",
-      );
-    const snapshot = stack[direction].pop()!;
-    const opposite = direction === "undo" ? "redo" : "undo";
-    stack[opposite].push(structuredClone(doc));
-    history.current.set(key, stack);
-    setDoc(snapshot, false);
+    const stack = editor.histories[`${scene.id}:${page.id}`];
+    if (!stack?.[direction].length) return setNotice(direction === "undo" ? "没有可撤销的操作。" : "没有可重做的操作。");
+    dispatchEditor({ type: "history", sceneId: scene.id, pageId: page.id, direction });
     setContentSelectionIds([]);
     setSelectedId(null);
+    setSelectedArtboardId(null);
     setNotice(direction === "undo" ? "已撤销。" : "已重做。");
   };
   const selectedLayerBatch = (draggedId: string) =>
@@ -1087,6 +1090,8 @@ export default function App() {
   const choose = (s: string, p: string) => {
     setSceneId(s);
     setPageId(p);
+    setContentSelectionIds([]);
+    treeSelectionAnchor.current = null;
     setSelectedId(null);
     setSelectedArtboardId(null);
     setView({ x: 80, y: 80, z: 0.5 });
@@ -1143,11 +1148,11 @@ export default function App() {
     try {
       setNotice("正在本地读取 PSD 图层…");
       const imported = await importPsd(input);
-      const hasExistingLayers = doc.layers.length > 0;
       const imageLayer = imported.layers.find(
         (layer) => layer.kind === "image",
       );
       const artboardId = uid();
+      importedArtboardToFocus.current = artboardId;
       setDoc((current) => {
         const origin = nextArtboardOrigin(current.artboards);
         const baseZ =
@@ -1178,18 +1183,6 @@ export default function App() {
       setContentSelectionIds([]);
       setSelectedArtboardId(artboardId);
       setSelectedId(imageLayer?.id || null);
-      if (!hasExistingLayers) {
-        const z = Math.min(
-          (size.width - 140) / imported.canvas.width,
-          (size.height - 140) / imported.canvas.height,
-          1,
-        );
-        setView({
-          z,
-          x: (size.width - imported.canvas.width * z) / 2,
-          y: (size.height - imported.canvas.height * z) / 2,
-        });
-      }
       setNotice(
         `已追加 PSD：${imported.layers.filter((layer) => layer.kind === "image").length} 个图像图层，已有图层保持不变。`,
       );
@@ -1207,8 +1200,14 @@ export default function App() {
       void importPsdFile(input);
       return;
     }
-    if (!input.type.startsWith("image/")) return;
+    if (!input.type.startsWith("image/") && !/\.(png|jpe?g|webp|gif|bmp|svg|avif|ico)$/i.test(input.name)) {
+      setNotice(`无法导入「${input.name}」：请选择图片或 PSD 文件。`);
+      return;
+    }
+    setNotice(`正在读取「${input.name}」…`);
     const reader = new FileReader();
+    reader.onerror = () => setNotice(`无法读取「${input.name}」：请检查文件是否可访问。`);
+    reader.onabort = () => setNotice(`已取消读取「${input.name}」。`);
     reader.onload = () => {
       const source = String(reader.result),
         image = new Image();
@@ -1216,6 +1215,7 @@ export default function App() {
         const id = uid(),
           artboardId = uid(),
           name = input.name.replace(/\.[^.]+$/, "");
+        importedArtboardToFocus.current = artboardId;
         setDoc((d) => {
           const origin = nextArtboardOrigin(d.artboards);
           const artboard = {
@@ -1254,20 +1254,9 @@ export default function App() {
         setContentSelectionIds([]);
         setSelectedArtboardId(artboardId);
         setSelectedId(id);
-      setNotice(`已创建画板「${name}」，原图已作为可拖动的画板图层。`);
-        if (!doc.layers.some((layer) => layer.kind === "image")) {
-          const z = Math.min(
-            (size.width - 140) / image.naturalWidth,
-            (size.height - 140) / image.naturalHeight,
-            1,
-          );
-          setView({
-            z,
-            x: (size.width - image.naturalWidth * z) / 2,
-            y: (size.height - image.naturalHeight * z) / 2,
-          });
-        }
+        setNotice(`已创建画板「${name}」，原图已作为可拖动的画板图层。`);
       };
+      image.onerror = () => setNotice(`无法解码「${input.name}」：文件可能损坏或格式不受浏览器支持，请转换为 PNG、JPG 或 WebP 后重试。`);
       image.src = source;
     };
     reader.readAsDataURL(input);
@@ -1295,29 +1284,14 @@ export default function App() {
   };
   const extract = () => {
     if (selected?.kind !== "selection") return setNotice("请选择待提取区域。");
-    const board = artboardForLayer(doc, selected),
-      source = doc.layers.find(
-        (l) => l.artboardId === selected.artboardId && l.kind === "image",
-      )?.source;
-    if (!source || !board) return;
+    const sourceLayer = doc.layers
+      .filter(l => l.artboardId === selected.artboardId && l.kind === "image" && l.source)
+      .sort((a, b) => a.zIndex - b.zIndex)[0];
+    if (!sourceLayer?.source) return setNotice("选区所在画板没有可提取的源图片。");
     const image = new Image();
+    image.onerror = () => setNotice("无法读取选区源图片。");
     image.onload = () => {
-      const canvas = window.document.createElement("canvas");
-      canvas.width = selected.width;
-      canvas.height = selected.height;
-      canvas
-        .getContext("2d")!
-        .drawImage(
-          image,
-          selected.x - board.x,
-          selected.y - board.y,
-          selected.width,
-          selected.height,
-          0,
-          0,
-          selected.width,
-          selected.height,
-        );
+      const canvas = extractSelectionCanvas(image, sourceLayer, selected);
       const layer: LayerNode = {
         ...selected,
         id: uid(),
@@ -1335,13 +1309,14 @@ export default function App() {
       }));
       setSelectedId(layer.id);
     };
-    image.src = source;
+    image.src = sourceLayer.source;
   };
   const groupSelectedLayers = () => {
     const ids = contentSelectionIds.filter((id) =>
       doc.layers.some((layer) => layer.id === id && layer.kind === "image"),
     );
     if (!ids.length) return setNotice("请先在画布中框选至少一个图片图层。");
+    if (new Set(doc.layers.filter(layer => ids.includes(layer.id)).map(layer => layer.artboardId)).size !== 1) return setNotice("只能编组同一画板内的图层。");
     const groupId = uid();
     setDoc((current) => {
       const children = current.layers.filter((layer) => ids.includes(layer.id));
@@ -1349,7 +1324,6 @@ export default function App() {
         ...new Set(children.map((layer) => layer.artboardId)),
       ];
       if (artboardIds.length !== 1) {
-        setNotice("只能编组同一画板内的图层。");
         return current;
       }
       const x = Math.min(...children.map((layer) => layer.x)),
@@ -1540,6 +1514,9 @@ export default function App() {
   ) => {
     const ids = targetIds();
     if (!ids.length) return;
+    const alignmentTargets = doc.layers.filter(layer => ids.includes(layer.id) && layer.kind === "image");
+    if (new Set(alignmentTargets.map(layer => layer.artboardId)).size !== 1) return setNotice("只能对齐或分布同一画板内的图层。");
+    if ((mode === "spaceX" || mode === "spaceY") && alignmentTargets.length < 3) return setNotice("等距分布至少需要选择 3 个图片图层。");
     setDoc((current) => {
       const targets = current.layers.filter(
         (layer) => ids.includes(layer.id) && layer.kind === "image",
@@ -1549,7 +1526,6 @@ export default function App() {
         ...new Set(targets.map((layer) => layer.artboardId)),
       ];
       if (artboardIds.length !== 1) {
-        setNotice("只能对齐或分布同一画板内的图层。");
         return current;
       }
       const artboard = current.artboards.find(
@@ -1557,7 +1533,6 @@ export default function App() {
       );
       if (!artboard) return current;
       if ((mode === "spaceX" || mode === "spaceY") && targets.length < 3) {
-        setNotice("等距分布至少需要选择 3 个图片图层。");
         return current;
       }
       const next = new Map<string, Partial<LayerNode>>();
@@ -1722,6 +1697,8 @@ export default function App() {
     targetLayer = doc.layers.find((layer) => layer.kind === "image"),
     boxes?: SmartSplitBox[],
     propagateError = false,
+    textLayers: LayerNode[] = [],
+    textBoxes: SmartSplitBox[] = [],
   ) => {
     const source = targetLayer?.source;
     if (!source) return setNotice("请先导入一张图片，再使用 AI 拆分。");
@@ -1763,7 +1740,7 @@ export default function App() {
       const comparison = appendSplitComparison(
         artboard,
         sourceLayer,
-        layers,
+        [...layers, ...textLayers],
         imageWidth,
         imageHeight,
       );
@@ -1782,6 +1759,8 @@ export default function App() {
     boxes: SmartSplitBox[],
     config: LocalComfyConfig,
     propagateError = false,
+    textLayers: LayerNode[] = [],
+    textBoxes: SmartSplitBox[] = [],
   ) => {
     const source = targetLayer.source;
     if (!source) return setNotice("请先导入一张图片，再使用本地拆分。");
@@ -1805,7 +1784,7 @@ export default function App() {
       const comparison = appendSplitComparison(
         artboard,
         targetLayer,
-        layers,
+        [...layers, ...textLayers],
         imageWidth,
         imageHeight,
       );
@@ -1822,6 +1801,8 @@ export default function App() {
     boxes: SmartSplitBox[],
     config: RunningHubConfig,
     propagateError = false,
+    textLayers: LayerNode[] = [],
+    textBoxes: SmartSplitBox[] = [],
   ) => {
     const source = targetLayer.source;
     if (!source) return setNotice("请先导入一张图片，再使用 RunningHub 拆分。");
@@ -1843,7 +1824,7 @@ export default function App() {
       const comparison = appendSplitComparison(
         artboard,
         targetLayer,
-        layers,
+        [...layers, ...textLayers],
         imageWidth,
         imageHeight,
       );
@@ -1869,22 +1850,25 @@ export default function App() {
               config?: LocalComfyConfig | RunningHubConfig,
             ) => {
               const splitBoxes = selectSplittableBoxes(boxes);
+              const textLayers = textLayersFromBoxes(boxes);
               if (boxes.length && !splitBoxes.length) {
-                setNotice("程序文字已保留，当前没有需要拆分的 UI 元素。");
-                return;
-              }
-              if (mode === "local") {
+                if (!textLayers.length) throw new Error("没有需要拆分的 UI 或可应用的程序文字。");
+                if (!selected.source || !selected.artboardId) throw new Error("请选择画板内的源图片。");
+                const sourceLayer = selected;
+                const placed = placeTextLayers(textLayers, sourceLayer, sourceLayer.assetWidth || sourceLayer.width, sourceLayer.assetHeight || sourceLayer.height);
+                setDoc(current => applyTextOverlay(current, sourceLayer.id, placed));
+                setSelectedId(placed[0].id);
+                setSelectedArtboardId(sourceLayer.artboardId ?? null);
+                setContentSelectionIds([]);
+                setNotice(`已在原位创建 ${placed.length} 个可编辑文字图层，原图和其他图层保持不变，文字随内容自动扩展。`);
+              } else if (mode === "local") {
                 if (!config) throw new Error("缺少 ComfyUI 本地拆分配置。");
-                await splitWithLocalComfy(selected, splitBoxes, config as LocalComfyConfig, true);
+                await splitWithLocalComfy(selected, boxes, config as LocalComfyConfig, true, textLayers, boxes);
               } else if (mode === "runninghub") {
                 if (!config) throw new Error("缺少 RunningHub 工作流配置。");
-                await splitWithRunningHub(selected, splitBoxes, config as RunningHubConfig, true);
+                await splitWithRunningHub(selected, boxes, config as RunningHubConfig, true, textLayers, boxes);
               } else {
-                await splitWithSeedream(
-                  selected,
-                  splitBoxes.length ? splitBoxes : undefined,
-                  true,
-                );
+                await splitWithSeedream(selected, splitBoxes.length ? splitBoxes : undefined, true, textLayers, boxes);
               }
               setSmartSplitOpen(false);
             }}
@@ -3008,6 +2992,29 @@ export default function App() {
       ...outsideLayers,
     ];
   };
+  const renderCanvasGroup = (group: LayerNode) => (
+                  <CanvasGroupFrame
+                    key={`group-frame-${group.id}`}
+                    group={group}
+                    children={descendants(group.id).filter(
+                      (layer) => layer.kind === "image" || layer.kind === "text",
+                    )}
+                    selected={
+                      group.id === selectedId ||
+                      contentSelectionIds.includes(group.id)
+                    }
+                    viewScale={view.z}
+                    select={(event) => {
+                      const pointer = event.evt as MouseEvent;
+                      selectLayer(group, {
+                        toggle: pointer.ctrlKey || pointer.metaKey,
+                        range: pointer.shiftKey,
+                      });
+                    }}
+                    move={(dx, dy) => moveGroup(group.id, dx, dy)}
+                    resize={(bounds) => patch(group.id, bounds)}
+                  />
+  );
   const renderCanvasArtboard = (
     artboard: DocumentState["artboards"][number],
   ) => {
@@ -3040,9 +3047,18 @@ export default function App() {
                       ? layer
                       : { ...layer, visible: false }
                   }
-                  selected={layer.id === selectedId}
+                  selected={
+                    layer.id === selectedId ||
+                    contentSelectionIds.includes(layer.id)
+                  }
                   keepRatio={ratioLocked}
-                  select={() => selectLayer(layer)}
+                  select={(event) => {
+                    const pointer = event.evt as MouseEvent;
+                    selectLayer(layer, {
+                      toggle: pointer.ctrlKey || pointer.metaKey,
+                      range: pointer.shiftKey,
+                    });
+                  }}
                   patch={(value) => patch(layer.id, value)}
                   drop={(x, y) => dropLayer(layer.id, x, y)}
                   sync={syncLiveLayer}
@@ -3050,6 +3066,7 @@ export default function App() {
               ),
             )}
           </ArtboardCanvas>
+          {boardLayers.filter(layer => layer.kind === "group").map(renderCanvasGroup)}
         </Group>
         <Group
           x={artboard.x}
@@ -3104,7 +3121,7 @@ export default function App() {
     );
   };
   const floatingLayers = ordered.filter((layer) => !layer.artboardId);
-  const canvasGroups = ordered.filter((layer) => layer.kind === "group");
+  const canvasGroups = floatingLayers.filter((layer) => layer.kind === "group");
   const exportGroupId = selected?.kind === "group" ? selected.id : undefined;
   return (
     <div className="app-shell" onClick={() => setMenu(null)}>
@@ -3127,7 +3144,7 @@ export default function App() {
         <div className="exports">
           <button
             disabled={!activeArtboard}
-            onClick={() => exportJson(doc, activeArtboard?.id, exportGroupId)}
+            onClick={() => exportJson(doc, activeArtboard?.id, exportGroupId).catch(e => setNotice(e.message))}
           >
             {exportGroupId ? "导出组 JSON" : "导出画板 JSON"}
           </button>
@@ -3160,10 +3177,11 @@ export default function App() {
       <input
         ref={file}
         type="file"
-        accept="image/*"
+        accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.ico,.psd"
+        multiple
         hidden
         onChange={(e) => {
-          upload(e.target.files?.[0]);
+          Array.from(e.target.files || []).forEach(upload);
           e.target.value = "";
         }}
       />
@@ -3218,7 +3236,7 @@ export default function App() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
-            upload(e.dataTransfer.files[0]);
+            Array.from(e.dataTransfer.files).forEach(upload);
           }}
         >
           <div className="notice">{notice}</div>
@@ -3244,9 +3262,18 @@ export default function App() {
                           ? layer
                           : { ...layer, visible: false }
                       }
-                      selected={layer.id === selectedId}
+                      selected={
+                        layer.id === selectedId ||
+                        contentSelectionIds.includes(layer.id)
+                      }
                       keepRatio={ratioLocked}
-                      select={() => selectLayer(layer)}
+                      select={(event) => {
+                        const pointer = event.evt as MouseEvent;
+                        selectLayer(layer, {
+                          toggle: pointer.ctrlKey || pointer.metaKey,
+                          range: pointer.shiftKey,
+                        });
+                      }}
                       patch={(value) => patch(layer.id, value)}
                       drop={(x, y) => dropLayer(layer.id, x, y)}
                       sync={syncLiveLayer}
@@ -3255,20 +3282,7 @@ export default function App() {
                 )}
               </Group>
               <Group>
-                {canvasGroups.map((group) => (
-                  <CanvasGroupFrame
-                    key={`group-frame-${group.id}`}
-                    group={group}
-                    children={descendants(group.id).filter(
-                      (layer) => layer.kind === "image" || layer.kind === "text",
-                    )}
-                    selected={group.id === selectedId}
-                    viewScale={view.z}
-                    select={() => selectLayer(group)}
-                    move={(dx, dy) => moveGroup(group.id, dx, dy)}
-                    resize={(bounds) => patch(group.id, bounds)}
-                  />
-                ))}
+                {canvasGroups.map(renderCanvasGroup)}
               </Group>
               {selected?.kind === "image" && (
                 <FloatingImageTransformer
@@ -3525,13 +3539,13 @@ export default function App() {
         </aside>
       </main>
       {smartSplitPortal}
-      {psdExportRequest && <PsdExportDialog
+      {psdExportRequest && <Suspense fallback={<div className="psd-export-overlay" role="status">正在加载 PSD 导出…</div>}><PsdExportDialog
         document={psdExportRequest.document}
         artboardId={psdExportRequest.artboardId}
         groupId={psdExportRequest.groupId}
         onClose={() => setPsdExportRequest(null)}
         onExported={setNotice}
-      />}
+      /></Suspense>}
       {menu && (
         <div
           className="context-menu"

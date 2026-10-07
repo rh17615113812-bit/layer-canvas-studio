@@ -4,8 +4,8 @@ import { resolve } from 'node:path';
 const root = process.cwd();
 const viteBin = resolve(root, 'node_modules/vite/bin/vite.js');
 const children = [
-  spawn(process.execPath, [resolve(root, 'server.mjs')], { cwd: root, stdio: 'inherit' }),
-  spawn(process.execPath, [viteBin, ...process.argv.slice(2)], { cwd: root, stdio: 'inherit' }),
+  spawn(process.execPath, ['--watch', resolve(root, 'server.mjs')], { cwd: root, stdio: 'inherit' }),
+  spawn(process.execPath, [viteBin, '--configLoader', 'runner', ...process.argv.slice(2)], { cwd: root, stdio: 'inherit' }),
 ];
 let shuttingDown = false;
 

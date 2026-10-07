@@ -72,7 +72,7 @@ export function godotScene(layout: EngineLayout): string {
       if (layer.kind === 'image') output.push('expand_mode = 1', 'stretch_mode = 0', `texture = ExtResource("${resourceId.get(layer.id)}")`);
       else if (layer.kind === 'text') {
         const style = layer.textStyle || {};
-        output.push(`text = ${quoted(layer.textContent || '')}`, `label_settings = SubResource("${textResourceId.get(layer.id)}")`, `horizontal_alignment = ${style.align === 'center' ? 1 : style.align === 'right' ? 2 : 0}`, `vertical_alignment = ${style.verticalAlign === 'middle' ? 1 : style.verticalAlign === 'bottom' ? 2 : 0}`, 'autowrap_mode = 3', 'clip_text = true');
+        output.push(`text = ${quoted(layer.textContent || '')}`, `label_settings = SubResource("${textResourceId.get(layer.id)}")`, `horizontal_alignment = ${style.align === 'center' ? 1 : style.align === 'right' ? 2 : 0}`, `vertical_alignment = ${style.verticalAlign === 'middle' ? 1 : style.verticalAlign === 'bottom' ? 2 : 0}`, 'autowrap_mode = 0', 'clip_text = false');
       }
     }
     output.push(`metadata/layer_id = ${quoted(layer.id)}`);
@@ -136,8 +136,8 @@ public class LayerCanvasImporter : AssetPostprocessor {
             label.fontStyle = style.bold && style.italic ? FontStyle.BoldAndItalic : style.bold ? FontStyle.Bold : style.italic ? FontStyle.Italic : FontStyle.Normal;
             label.color = ParseColor(style.color, Color.white, item.opacity);
             label.lineSpacing = style.lineHeight > 0 ? style.lineHeight : 1.2f;
-            label.horizontalOverflow = HorizontalWrapMode.Wrap;
-            label.verticalOverflow = VerticalWrapMode.Truncate;
+            label.horizontalOverflow = HorizontalWrapMode.Overflow;
+            label.verticalOverflow = VerticalWrapMode.Overflow;
             label.alignment = Align(style.align, style.verticalAlign);
             label.raycastTarget = false;
             if (style.strokeWidth > 0) {
@@ -226,8 +226,8 @@ export class LayerCanvasImporter extends Component {
           label.lineHeight = Math.max(1, Math.round(label.fontSize * (style.lineHeight || 1.2)));
           label.horizontalAlign = style.align === 'center' ? Label.HorizontalAlign.CENTER : style.align === 'right' ? Label.HorizontalAlign.RIGHT : Label.HorizontalAlign.LEFT;
           label.verticalAlign = style.verticalAlign === 'middle' ? Label.VerticalAlign.CENTER : style.verticalAlign === 'bottom' ? Label.VerticalAlign.BOTTOM : Label.VerticalAlign.TOP;
-          label.overflow = Label.Overflow.CLAMP;
-          label.enableWrapText = true;
+          label.overflow = Label.Overflow.NONE;
+          label.enableWrapText = false;
           label.isBold = !!style.bold; label.isItalic = !!style.italic;
           label.spacingX = style.letterSpacing || 0;
           label.color = Color.fromHEX(new Color(), style.color || '#ffffff');

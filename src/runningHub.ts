@@ -1,7 +1,7 @@
 import type { SmartSplitBox } from './SmartSplitWorkspace';
-import { fitLocalAssetToBox } from './localComfy';
+import { fitLocalAssetToBox } from './localComfy.ts';
 import type { LayerNode } from './types';
-import { getOverlapMasksForBox, getOverlappingBoxGroups, zIndexForFrontToBackIndex } from './boxOverlap';
+import { getOverlapMasksForBox, getOverlappingBoxGroups, zIndexForFrontToBackIndex } from './boxOverlap.ts';
 import type { WorkflowPromptOverride } from './backgroundPrompt';
 
 export type RunningHubConfig = {
@@ -61,6 +61,14 @@ export async function runningHubLayerSplit(
   if (!promptNodeId) throw new Error('请在 RunningHub 配置中填写背景提示词节点 ID。');
   if (!prompt) throw new Error('背景分离提示词不能为空。');
   const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
+  // Background text belongs only to the explicit whole-image override.
+  // Region jobs submit workflow inputs without any prompt configuration.
+  const workflowConfig = {
+    workflowId: config.workflowId, inputNodeId: config.inputNodeId,
+    inputFieldName: config.inputFieldName, outputNodeIds: config.outputNodeIds,
+    instanceType: config.instanceType, addMetadata: config.addMetadata,
+    usePersonalQueue: config.usePersonalQueue,
+  };
   const sourceImage = await loadImage(source);
   const overlapGroups = getOverlappingBoxGroups(groupingBoxes);
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
@@ -71,7 +79,7 @@ export async function runningHubLayerSplit(
   const backgroundResponse = await fetch('http://127.0.0.1:8787/api/runninghub/layer-split', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image: source, config, promptOverride }),
+    body: JSON.stringify({ image: source, config: workflowConfig, promptOverride }),
   });
   const backgroundBody = await backgroundResponse.json().catch(() => ({}));
   if (!backgroundResponse.ok) throw new Error(backgroundBody.error || 'RunningHub 背景分离工作流失败。');
@@ -102,7 +110,7 @@ export async function runningHubLayerSplit(
     const response = await fetch('http://127.0.0.1:8787/api/runninghub/layer-split', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: cropDataUrl(sourceImage, box.bbox, overlapMasks), config }),
+      body: JSON.stringify({ image: cropDataUrl(sourceImage, box.bbox, overlapMasks), config: workflowConfig }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `RunningHub 工作流处理区域 ${index + 1} 失败。`);

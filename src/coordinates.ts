@@ -4,6 +4,18 @@ export type PixelBBox = [number, number, number, number];
 export type NormalizedBBox = [number, number, number, number];
 export type OcrTextRegion = { text: string; bbox: PixelBBox; style: TextLayerStyle };
 
+/** Map pointer coordinates through the image's actual rendered bounds, including pan and CSS scaling. */
+export function clientPointToImage(
+  clientX: number, clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  imageWidth: number, imageHeight: number,
+) {
+  return {
+    x: (clientX - rect.left) * imageWidth / Math.max(1, rect.width),
+    y: (clientY - rect.top) * imageHeight / Math.max(1, rect.height),
+  };
+}
+
 export const normalizeOcrRegions = (
   regions: unknown[],
   width: number,

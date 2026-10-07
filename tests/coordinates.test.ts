@@ -2,13 +2,25 @@ import assert from 'node:assert/strict';
 import { clampPixelBBox, normalizedToPixelBBox, pixelToNormalizedBBox } from '../src/coordinates.ts';
 import { DEFAULT_VISION_INSTRUCTION, selectSplittableBoxes } from '../src/smartSplit.ts';
 import { placeAssetInComposite } from '../src/seedream.ts';
-import { assignLayerToArtboard, artboardContainingPoint, createArtboardDocument, createGroupDocument, layerToArtboardCoordinates, nextArtboardOrigin, removeArtboard, resizeArtboard, translateArtboard } from '../src/artboards.ts';
+import { assignLayerToArtboard, artboardContainingPoint, createArtboardDocument, createGroupDocument, fitArtboardView, layerToArtboardCoordinates, nextArtboardOrigin, removeArtboard, resizeArtboard, translateArtboard } from '../src/artboards.ts';
 import { assignLayerBatchToArtboard, rangeLayerSelection, removeLayerBatch, reorderLayerBatch, rootMovingLayerIds, toggleLayerSelection } from '../src/layerOrder.ts';
 import { fitLocalAssetToBox } from '../src/localComfy.ts';
 import { getOverlapMasksForBox, orderBoxesByDefaultStacking, reorderGroupMembers, zIndexForFrontToBackIndex } from '../src/boxOverlap.ts';
 import { normalizeOcrRegions } from '../src/coordinates.ts';
 import { buildEngineLayout, hasInterleavedGroups, orderedEngineLayers } from '../src/engineExportModel.ts';
 import { buildEngineFiles, godotScene } from '../src/engineExports.ts';
+
+// Importing another image must move the viewport to its new, nonzero canvas origin.
+const importedBoard = { x: 4560, y: 320, width: 1440, height: 3168 };
+const importViewport = { width: 900, height: 700 };
+const importView = fitArtboardView(importedBoard, importViewport);
+assert.ok(importView.z > 0 && importView.z <= 1);
+assert.ok(Math.abs((importedBoard.x + importedBoard.width / 2) * importView.z + importView.x - importViewport.width / 2) < 1e-6);
+assert.ok(Math.abs((importedBoard.y + importedBoard.height / 2) * importView.z + importView.y - importViewport.height / 2) < 1e-6);
+assert.ok(importedBoard.width * importView.z <= importViewport.width - 140);
+assert.ok(importedBoard.height * importView.z <= importViewport.height - 140);
+assert.ok(fitArtboardView(importedBoard, { width: 80, height: 100 }).z > 0);
+console.log('imported artboard visibility regression passed');
 
 const engineFixture = buildEngineLayout({
   version: '1.0', canvas: { width: 900, height: 700 },
