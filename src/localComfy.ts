@@ -14,6 +14,7 @@ export type LocalComfyConfig = {
   backgroundPrompt?: string;
   backgroundResolutionNodeId?: string;
   backgroundResolution?: number;
+  splitBackground?: boolean;
 };
 
 type Size = { width: number; height: number };
@@ -87,17 +88,23 @@ export async function localComfyLayerSplit(
   groupingBoxes: SmartSplitBox[] = boxes,
 ): Promise<LayerNode[]> {
   if (!boxes.length) throw new Error('本地拆分需要先手动框选或使用 AI 自动框选。');
+  const includeBackground = config.splitBackground !== false;
   const promptNodeId = config.backgroundPromptNodeId?.trim() || '';
   const promptFieldName = config.backgroundPromptFieldName?.trim() || 'text';
   const prompt = config.backgroundPrompt?.trim() || '';
-  if (!promptNodeId) throw new Error('请在本地拆分配置中填写背景提示词节点 ID。');
-  if (!prompt) throw new Error('背景分离提示词不能为空。');
-  const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
-  const backgroundWorkflow = backgroundComfyWorkflow(config.workflow, config.backgroundResolutionNodeId, config.backgroundResolution ?? 0);
+  if (includeBackground && !promptNodeId) throw new Error('请在本地拆分配置中填写背景提示词节点 ID。');
+  if (includeBackground && !prompt) throw new Error('背景分离提示词不能为空。');
+  const promptOverride: WorkflowPromptOverride | undefined = includeBackground
+    ? { nodeId: promptNodeId, fieldName: promptFieldName, prompt }
+    : undefined;
+  const backgroundWorkflow = includeBackground
+    ? backgroundComfyWorkflow(config.workflow, config.backgroundResolutionNodeId, config.backgroundResolution ?? 0)
+    : undefined;
   const image = await loadImage(source);
   const results: LayerNode[] = [];
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
 
+  if (includeBackground) {
   const backgroundResponse = await fetch('http://127.0.0.1:8787/api/comfyui/layer-split', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -135,6 +142,7 @@ export async function localComfyLayerSplit(
     assetWidth: backgroundAsset.width,
     assetHeight: backgroundAsset.height,
   });
+  }
 
   // Run one crop at a time. A ComfyUI result has no placement metadata, so every
   // returned bitmap is fitted back into the exact box that produced its crop.

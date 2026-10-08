@@ -211,6 +211,7 @@ function Sprite({
   layer,
   selected,
   keepRatio,
+  hover,
   select,
   patch,
   drop,
@@ -219,6 +220,7 @@ function Sprite({
   layer: LayerNode;
   selected: boolean;
   keepRatio: boolean;
+  hover: (id: string | null) => void;
   select: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   patch: (v: Partial<LayerNode>) => void;
   drop: (x: number, y: number) => void;
@@ -251,6 +253,8 @@ function Sprite({
         dash={[8, 5]}
         fill="rgba(182,240,74,.08)"
         draggable={!layer.locked}
+        onMouseEnter={() => hover(layer.id)}
+        onMouseLeave={() => hover(null)}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
         onDragStart={(e) => {
@@ -288,12 +292,28 @@ function Sprite({
         letterSpacing={style?.letterSpacing || 0}
         wrap="none"
         draggable={!layer.locked}
+        onMouseEnter={() => hover(layer.id)}
+        onMouseLeave={() => hover(null)}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
         onDragStart={(e) => { e.cancelBubble = true; }}
         onDragEnd={(e) => {
           e.cancelBubble = true;
           drop(Math.round(e.target.x()), Math.round(e.target.y()));
+        }}
+        onTransformEnd={(event) => {
+          const node = event.target as Konva.Text;
+          const scale = Math.sqrt(Math.abs(node.scaleX() * node.scaleY()));
+          patch({
+            x: Math.round(node.x()),
+            y: Math.round(node.y()),
+            rotation: Math.round(node.rotation()),
+            textStyle: {
+              ...style,
+              fontSize: Math.max(2, Math.round((style?.fontSize || 24) * scale)),
+            },
+          });
+          node.scale({ x: 1, y: 1 });
         }}
       />
     );
@@ -311,6 +331,8 @@ function Sprite({
         rotation={layer.rotation || 0}
         opacity={layer.opacity ?? 1}
         draggable={!layer.locked}
+        onMouseEnter={() => hover(layer.id)}
+        onMouseLeave={() => hover(null)}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
         onDragStart={(e) => {
@@ -344,9 +366,11 @@ function Sprite({
 function FloatingImageTransformer({
   layer,
   keepRatio,
+  viewScale,
 }: {
   layer: LayerNode;
   keepRatio: boolean;
+  viewScale: number;
 }) {
   const transformer = useRef<Konva.Transformer>(null);
   useEffect(() => {
@@ -367,7 +391,8 @@ function FloatingImageTransformer({
       flipEnabled={false}
       borderStroke="#b6f04a"
       borderStrokeWidth={2}
-      anchorSize={10}
+      anchorSize={6}
+      anchorStyleFunc={(anchor) => anchor.hitStrokeWidth(18 / viewScale)}
       anchorStroke="#d9ff86"
       anchorStrokeWidth={1}
       anchorFill="#b6f04a"
@@ -376,15 +401,52 @@ function FloatingImageTransformer({
   );
 }
 
+function FloatingTextTransformer({ layer, viewScale }: { layer: LayerNode; viewScale: number }) {
+  const transformer = useRef<Konva.Transformer>(null);
+  useEffect(() => {
+    const stage = Konva.stages.find((candidate) =>
+      Boolean(candidate.findOne(`#${layer.id}`)),
+    );
+    const node = stage?.findOne(`#${layer.id}`) as Konva.Text | undefined;
+    if (!node || !transformer.current) return;
+    transformer.current.nodes([node]);
+    transformer.current.getLayer()?.batchDraw();
+  }, [layer.id, layer.x, layer.y, layer.width, layer.height, layer.rotation, layer.textContent, layer.textStyle]);
+  if (layer.locked || !layer.visible) return null;
+  return (
+    <Transformer
+      ref={transformer}
+      rotateEnabled
+      keepRatio
+      flipEnabled={false}
+      borderStroke="#b6f04a"
+      borderStrokeWidth={2}
+      anchorSize={6}
+      anchorStyleFunc={(anchor) => anchor.hitStrokeWidth(18 / viewScale)}
+      anchorStroke="#d9ff86"
+      anchorStrokeWidth={1}
+      anchorFill="#b6f04a"
+      anchorCornerRadius={1}
+      boundBoxFunc={(oldBox, newBox) =>
+        Math.abs(newBox.width) < 16 || Math.abs(newBox.height) < 16
+          ? oldBox
+          : newBox
+      }
+    />
+  );
+}
+
 function ArtboardCanvas({
   artboard,
   selected,
+  viewScale,
   select,
   resize,
   children,
 }: {
   artboard: DocumentState["artboards"][number];
   selected: boolean;
+  viewScale: number;
   select: () => void;
   resize: (bounds: Bounds) => void;
   children: ReactNode;
@@ -443,7 +505,8 @@ function ArtboardCanvas({
           keepRatio={false}
           flipEnabled={false}
           borderEnabled={false}
-          anchorSize={10}
+          anchorSize={6}
+          anchorStyleFunc={(anchor) => anchor.hitStrokeWidth(18 / viewScale)}
           anchorStroke="#d9ff86"
           anchorStrokeWidth={1}
           anchorFill="#b6f04a"
@@ -465,6 +528,7 @@ function CanvasGroupFrame({
   selected,
   viewScale,
   select,
+  hover,
   move,
   resize,
 }: {
@@ -473,6 +537,7 @@ function CanvasGroupFrame({
   selected: boolean;
   viewScale: number;
   select: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  hover: (id: string | null) => void;
   move: (dx: number, dy: number) => void;
   resize: (bounds: Bounds) => void;
 }) {
@@ -538,6 +603,8 @@ function CanvasGroupFrame({
         x={group.x}
         y={titleY}
         draggable={!group.locked}
+        onMouseEnter={() => hover(group.id)}
+        onMouseLeave={() => hover(null)}
         onMouseDown={selectBeforeDrag}
         onTouchStart={selectBeforeDrag}
         onDragStart={(event) => {
@@ -578,7 +645,8 @@ function CanvasGroupFrame({
           keepRatio={false}
           flipEnabled={false}
           borderEnabled={false}
-          anchorSize={10}
+          anchorSize={6}
+          anchorStyleFunc={(anchor) => anchor.hitStrokeWidth(18 / viewScale)}
           anchorStroke="#d9ff86"
           anchorStrokeWidth={1}
           anchorFill="#b6f04a"
@@ -613,6 +681,7 @@ export default function App() {
     [sceneId, setSceneId] = useState(initial.id),
     [pageId, setPageId] = useState(initial.pages[0].id),
     [selectedId, setSelectedId] = useState<string | null>(null),
+    [hoveredLayerId, setHoveredLayerId] = useState<string | null>(null),
     [selectedArtboardId, setSelectedArtboardId] = useState<string | null>(null),
     [view, setView] = useState({ x: 80, y: 80, z: 0.5 }),
     [size, setSize] = useState({ width: 900, height: 700 }),
@@ -728,6 +797,12 @@ export default function App() {
     }
     return true;
   };
+  const hoveredLayer = hoveredLayerId
+    ? doc.layers.find(
+        (layer) => layer.id === hoveredLayerId && effectivelyVisible(layer),
+      )
+    : undefined;
+  const hoveredLayerBounds = hoveredLayer ? fitTextLayer(hoveredLayer) : undefined;
   const setLayerSelection = (ids: string[], primaryId: string | null) => {
     const uniqueIds = [...new Set(ids)].filter((id) =>
       doc.layers.some((layer) => layer.id === id),
@@ -1770,7 +1845,8 @@ export default function App() {
       return setNotice(message);
     }
     setSplitting(true);
-    setNotice(`ComfyUI 将先提交 1 次整图背景分离，再处理 ${splitBoxes.length} 个框选区域…`);
+    const includeBackground = config.splitBackground !== false;
+    setNotice(`ComfyUI 将处理 ${splitBoxes.length} 个框选区域${includeBackground ? '，并单独拆分背景' : ''}…`);
     try {
       const imageWidth =
           targetLayer.assetWidth || targetLayer.width || doc.canvas.width,
@@ -1786,7 +1862,7 @@ export default function App() {
         imageWidth,
         imageHeight,
       );
-      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length - 1} 个框选图层和 1 个背景图层已放入其中；原图保持不变。`);
+      setNotice(`已在右侧新建画板「${comparison.name}」，${layers.length - (includeBackground ? 1 : 0)} 个框选图层${includeBackground ? '和 1 个背景图层' : ''}已放入其中；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "ComfyUI 本地拆分失败。");
@@ -1812,7 +1888,8 @@ export default function App() {
       return setNotice(message);
     }
     setSplitting(true);
-    setNotice(`RunningHub 将先提交 1 次整图背景分离，再处理 ${splitBoxes.length} 个框选区域…`);
+    const includeBackground = config.splitBackground !== false;
+    setNotice(`RunningHub 将处理 ${splitBoxes.length} 个框选区域${includeBackground ? '，并单独拆分背景' : ''}…`);
     try {
       const imageWidth = targetLayer.assetWidth || targetLayer.width || doc.canvas.width;
       const imageHeight = targetLayer.assetHeight || targetLayer.height || doc.canvas.height;
@@ -1828,7 +1905,7 @@ export default function App() {
       );
       const imageCount = layers.filter((layer) => layer.kind === "image").length;
       const groupCount = layers.filter((layer) => layer.kind === "group").length;
-      setNotice(`已在右侧新建画板「${comparison.name}」，${imageCount - 1} 个框选图层和 1 个背景图层已放入其中${groupCount ? `，包含 ${groupCount} 个重叠框组` : ""}；原图保持不变。`);
+      setNotice(`已在右侧新建画板「${comparison.name}」，${imageCount - (includeBackground ? 1 : 0)} 个框选图层${includeBackground ? '和 1 个背景图层' : ''}已放入其中${groupCount ? `，包含 ${groupCount} 个重叠框组` : ""}；原图保持不变。`);
     } catch (error) {
       if (propagateError) throw error;
       setNotice(error instanceof Error ? error.message : "RunningHub 工作流拆分失败。");
@@ -2151,7 +2228,10 @@ export default function App() {
         p.x - (selected.x + selected.width / 2),
       );
     };
-    const move = () => {
+    const move = (event: Konva.KonvaEventObject<MouseEvent>) => {
+      // Transformer anchors already set a direction-specific resize cursor.
+      // Keep the custom corner-rotation cursor from overriding it.
+      if (event.target.name().includes("_anchor")) return;
       const angle = cornerAngle();
       stage.container().style.cursor =
         angle === undefined && !start ? "default" : "crosshair";
@@ -2350,7 +2430,8 @@ export default function App() {
       flipEnabled: false,
       borderStroke: "#b6f04a",
       borderStrokeWidth: 2,
-      anchorSize: 10,
+      anchorSize: 6,
+      anchorStyleFunc: (anchor) => anchor.hitStrokeWidth(18 / view.z),
       anchorStroke: "#d9ff86",
       anchorStrokeWidth: 1,
       anchorFill: "#b6f04a",
@@ -2874,6 +2955,12 @@ export default function App() {
             className={`layer-row ${isSelected ? "selected" : ""}`}
             data-layer-id={layer.id}
             draggable
+            onMouseEnter={() => setHoveredLayerId(layer.id)}
+            onMouseLeave={() =>
+              setHoveredLayerId((current) =>
+                current === layer.id ? null : current,
+              )
+            }
             onClick={(event) => {
               if (suppressTreeClick.current) {
                 suppressTreeClick.current = false;
@@ -3010,6 +3097,7 @@ export default function App() {
                         range: pointer.shiftKey,
                       });
                     }}
+                    hover={setHoveredLayerId}
                     move={(dx, dy) => moveGroup(group.id, dx, dy)}
                     resize={(bounds) => patch(group.id, bounds)}
                   />
@@ -3034,6 +3122,7 @@ export default function App() {
               selectedId === null &&
               contentSelectionIds.length === 0
             }
+              viewScale={view.z}
             select={() => selectArtboard(artboard.id)}
             resize={(bounds) => setArtboardBounds(artboard.id, bounds)}
           >
@@ -3051,6 +3140,7 @@ export default function App() {
                     contentSelectionIds.includes(layer.id)
                   }
                   keepRatio={ratioLocked}
+                  hover={setHoveredLayerId}
                   select={(event) => {
                     const pointer = event.evt as MouseEvent;
                     selectLayer(layer, {
@@ -3266,6 +3356,7 @@ export default function App() {
                         contentSelectionIds.includes(layer.id)
                       }
                       keepRatio={ratioLocked}
+                      hover={setHoveredLayerId}
                       select={(event) => {
                         const pointer = event.evt as MouseEvent;
                         selectLayer(layer, {
@@ -3283,11 +3374,43 @@ export default function App() {
               <Group>
                 {canvasGroups.map(renderCanvasGroup)}
               </Group>
+              {hoveredLayer && hoveredLayerBounds && hoveredLayer.kind !== "selection" && (
+                <Group
+                  x={hoveredLayerBounds.x}
+                  y={hoveredLayerBounds.y}
+                  rotation={hoveredLayerBounds.rotation || 0}
+                  listening={false}
+                >
+                  <Rect
+                    width={hoveredLayerBounds.width}
+                    height={hoveredLayerBounds.height}
+                    stroke="#b6f04a"
+                    strokeWidth={2 / view.z}
+                    listening={false}
+                  />
+                  <KText
+                    y={-20 / view.z}
+                    width={Math.min(Math.max(80 / view.z, hoveredLayerBounds.width), 220 / view.z)}
+                    height={16 / view.z}
+                    text={hoveredLayer.name}
+                    fill="#b6f04a"
+                    fontSize={12 / view.z}
+                    fontStyle="bold"
+                    ellipsis
+                    wrap="none"
+                    listening={false}
+                  />
+                </Group>
+              )}
               {selected?.kind === "image" && (
                 <FloatingImageTransformer
                   layer={selected}
                   keepRatio={ratioLocked}
+                  viewScale={view.z}
                 />
+              )}
+              {selected?.kind === "text" && (
+                <FloatingTextTransformer layer={selected} viewScale={view.z} />
               )}
             </Layer>
           </Stage>

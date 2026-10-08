@@ -103,6 +103,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   const [inputNodeId, setInputNodeId] = useState('470');
   const [outputNodeIds, setOutputNodeIds] = useState('485');
   const [backgroundPrompt, setBackgroundPrompt] = useState(() => localStorage.getItem('layer-canvas-background-prompt') || DEFAULT_BACKGROUND_PROMPT);
+  const [splitBackground, setSplitBackground] = useState(() => localStorage.getItem('layer-canvas-split-background') !== 'false');
   const [comfyBackgroundPromptNodeId, setComfyBackgroundPromptNodeId] = useState('490');
   const [comfyBackgroundPromptFieldName, setComfyBackgroundPromptFieldName] = useState('text');
   const [backgroundResolutionNodeId, setBackgroundResolutionNodeId] = useState('484');
@@ -317,15 +318,15 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
       setError(`${mode === 'local' ? '本地' : 'RunningHub'}拆分不会返回坐标，请先手动框选或使用 AI 自动框选。`);
       return;
     }
-    if (hasUi && mode !== 'api' && !backgroundPrompt.trim()) {
+    if (splitBackground && hasUi && mode !== 'api' && !backgroundPrompt.trim()) {
       setError('请填写背景分离提示词。');
       return;
     }
-    if (hasUi && mode === 'local' && !comfyBackgroundPromptNodeId.trim()) {
+    if (splitBackground && hasUi && mode === 'local' && !comfyBackgroundPromptNodeId.trim()) {
       setError('请在本地配置中填写背景提示词节点 ID。');
       return;
     }
-    if (hasUi && mode === 'runninghub' && !runningHubBackgroundPromptNodeId.trim()) {
+    if (splitBackground && hasUi && mode === 'runninghub' && !runningHubBackgroundPromptNodeId.trim()) {
       setError('请在 RunningHub 配置中填写背景提示词节点 ID。');
       return;
     }
@@ -362,6 +363,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
             backgroundResolutionNodeId: backgroundResolutionNodeId.trim(),
             backgroundResolution,
             backgroundPrompt,
+            splitBackground,
           }
         : mode === 'runninghub'
           ? {
@@ -375,6 +377,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
               backgroundPromptNodeId: runningHubBackgroundPromptNodeId.trim(),
               backgroundPromptFieldName: runningHubBackgroundPromptFieldName.trim() || 'text',
               backgroundPrompt,
+              splitBackground,
             }
           : undefined;
       const ready: SmartSplitBox[] = [];
@@ -404,11 +407,18 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
   const filteredRunningHubNodes = runningHubNodes.filter(node => `${node.id} ${node.label}`.toLowerCase().includes(runningHubNodeSearch.trim().toLowerCase()));
   const chooseRunningHubNode = (node: RunningHubNodeCandidate) => { setRunningHubInputNodeId(node.id); if (node.fieldName) setRunningHubInputFieldName(node.fieldName); };
   const runningHubSettings = <div className="smart-split-local-settings smart-split-runninghub-settings"><p className="smart-split-config-note">此页调用 RunningHub ComfyUI 工作流 API。API Key 只从本机服务端 .env.local 读取，不会保存到浏览器。</p><label className="smart-split-config-upload"><span>工作流节点映射 JSON（可选）</span><span className="smart-split-workflow"><input type="file" accept=".json,application/json" onChange={event => void loadRunningHubWorkflow(event.target.files?.[0])} /><b>{runningHubWorkflowName}</b></span></label><label><span>工作流 API ID</span><input value={runningHubWorkflowId} onChange={event => setRunningHubWorkflowId(event.target.value)} placeholder="2101886414299426818" /></label><label><span>图片输入节点 ID（必填）</span><input value={runningHubInputNodeId} onChange={event => setRunningHubInputNodeId(event.target.value)} placeholder="上传 JSON 后自动识别，亦可手动填写" /></label><label><span>图片字段名</span><input value={runningHubInputFieldName} onChange={event => setRunningHubInputFieldName(event.target.value)} placeholder="image" /></label><label><span>背景提示词节点 ID（必填）</span><input value={runningHubBackgroundPromptNodeId} onChange={event => setRunningHubBackgroundPromptNodeId(event.target.value)} placeholder="工作流中的文本提示词节点 ID" /></label><label><span>提示词字段名</span><input value={runningHubBackgroundPromptFieldName} onChange={event => setRunningHubBackgroundPromptFieldName(event.target.value)} placeholder="text" /></label><label><span>输出节点 ID（可选，逗号分隔）</span><input value={runningHubOutputNodeIds} onChange={event => setRunningHubOutputNodeIds(event.target.value)} placeholder="留空取第一个图片结果" /></label><label><span>运行实例</span><select value={runningHubInstanceType} onChange={event => setRunningHubInstanceType(event.target.value as 'default' | 'plus' | 'ultra')}><option value="default">default · 24G</option><option value="plus">plus · 48G</option><option value="ultra">ultra · 84G</option></select></label><div className="smart-split-runninghub-options"><label><input type="checkbox" checked={runningHubAddMetadata} onChange={event => setRunningHubAddMetadata(event.target.checked)} />输出附带工作流元数据</label><label><input type="checkbox" checked={runningHubPersonalQueue} onChange={event => setRunningHubPersonalQueue(event.target.checked)} />使用个人独占队列</label></div>{backgroundPromptEditor}{runningHubNodes.length > 0 && <section className="smart-split-node-picker"><header><b>识别到 {runningHubNodes.length} 个节点</b><input value={runningHubNodeSearch} onChange={event => setRunningHubNodeSearch(event.target.value)} placeholder="搜索节点 ID 或名称" /></header><div>{filteredRunningHubNodes.map(node => <button type="button" className={node.id === runningHubInputNodeId ? 'active' : ''} key={node.id} onClick={() => chooseRunningHubNode(node)}><b>{node.id}</b><span>{node.label}</span>{node.score === 2 && <em>图片候选</em>}</button>)}</div></section>}</div>;
+  const ocrModeSelect = <label className="smart-split-ocr-mode"><span>文字识别方式</span><select aria-label="文字识别方式" value={ocrProvider} disabled={busy || recognizingIds.length > 0} onChange={event => {
+    setOcrProvider(event.target.value as 'local' | 'cloud' | 'tencent');
+    setBoxes(current => current.map(box => ({ ...box, ocrRegions: undefined, ocrBBox: undefined, ocrError: undefined })));
+  }}><option value="tencent">腾讯云高精度 OCR</option><option value="local">本地 OCR（中英文）</option><option value="cloud">云端视觉识别</option></select></label>;
   const firstPanel = <>
     <div className="smart-split-compact-header">
-      {mode === 'local' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ 本地配置</button> : mode === 'runninghub' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ RunningHub 配置</button> : <h2>AI 智能分层 · 框选元素</h2>}
-      <button className="smart-split-ai" onClick={autoBox} disabled={busy}>✦ {busy ? '识别中…' : `AI 自动框选${normalized.length ? ` (${normalized.length})` : ''}`}</button>
+      <div className="smart-split-compact-actions">{mode === 'local' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ 本地配置</button> : mode === 'runninghub' ? <button className="smart-split-config-button" onClick={() => setConfigOpen(true)}>⚙ RunningHub 配置</button> : <h2>AI 智能分层 · 框选元素</h2>}
+      {ocrProvider === 'tencent' && <button className="smart-split-config-button" disabled={busy || recognizingIds.length > 0} onClick={() => setTencentConfigOpen(open => !open)}>腾讯云 OCR 配置</button>}
+      </div>
+      <div className="smart-split-compact-controls">{ocrModeSelect}<button className="smart-split-ai" onClick={autoBox} disabled={busy}>✦ {busy ? '识别中…' : `AI 自动框选${normalized.length ? ` (${normalized.length})` : ''}`}</button></div>
     </div>
+    {ocrProvider === 'tencent' && tencentConfigOpen && <div className="smart-split-tencent-config">{tencentConfigFields}</div>}
     {mode === 'api' && <p className="smart-split-compact-help">在图片上拖拽框选；拖动左上角标题可移动，框内可继续画新框，八方向控制点可调整大小。选中框后按 Delete 删除，可用 Ctrl+Z / Ctrl+Y 撤销和重做。</p>}
     {mode !== 'runninghub' && <details className="smart-split-advanced">
       <summary>识别提示词</summary>
@@ -573,13 +583,7 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
       }
     }
     endLayerDrag();
-  }}>{layerRows}</div><label>文字识别方式 <select aria-label="文字识别方式" value={ocrProvider} disabled={busy || recognizingIds.length > 0} onChange={event => {
-    setOcrProvider(event.target.value as 'local' | 'cloud' | 'tencent');
-    setBoxes(current => current.map(box => ({ ...box, ocrRegions: undefined, ocrBBox: undefined, ocrError: undefined })));
-  }}><option value="tencent">腾讯云高精度 OCR（免费额度）</option><option value="local">本地 OCR（Tesseract，中英文）</option><option value="cloud">云端视觉识别（方舟）</option></select></label>{ocrProvider === 'tencent' && <div className="smart-split-tencent-config">
-    <button disabled={busy || recognizingIds.length > 0} onClick={() => setTencentConfigOpen(open => !open)}>腾讯云 OCR 配置</button>
-    {tencentConfigOpen && tencentConfigFields}
-  </div>}<small>{ocrProvider === 'local' ? '本地识别无需 API Key，文字图片不发送到外部服务；字体和样式为近似值，可在应用后调整。' : ocrProvider === 'tencent' ? '腾讯云每月提供 1000 次高精度 OCR 免费额度；请保持账号后付费关闭。仅发送文字框裁切图片，失败不会自动重试或切换服务。' : '云端识别需配置方舟 API Key，会发送所选文字框的裁切图片。'}程序文字只在原位置叠加，不裁切图片或其他图层；文字随内容自动扩展。</small><small className="smart-split-error">{error}</small><div className="smart-split-footer"><button disabled={busy} onClick={() => setStep(1)}>上一步</button><button className="smart-split-primary" disabled={busy || recognizingIds.length > 0} onClick={start}>{busy ? '正在处理…' : normalized.length > 0 && normalized.every(box => box.type === 'text') ? '应用程序文字' : '开始分层 / 应用文字'}</button></div></>;
+  }}>{layerRows}</div>{mode !== "api" && <label className="smart-split-background-toggle"><input type="checkbox" checked={splitBackground} disabled={busy} onChange={event => { setSplitBackground(event.target.checked); localStorage.setItem("layer-canvas-split-background", String(event.target.checked)); }} /><span><b>单独拆分背景</b><small>取消勾选后仅拆分框选区域，不提交整图背景任务。</small></span></label>}<small className="smart-split-error">{error}</small><div className="smart-split-footer"><button disabled={busy} onClick={() => setStep(1)}>上一步</button><button className="smart-split-primary" disabled={busy || recognizingIds.length > 0} onClick={start}>{busy ? '正在处理…' : normalized.length > 0 && normalized.every(box => box.type === 'text') ? '应用程序文字' : '开始分层 / 应用文字'}</button></div></>;
   const activate = (next: SplitMode) => { setMode(next); setStep(1); setConfigOpen(false); setError(''); };
   const modeTitle = mode === 'api' ? 'API 拆分' : mode === 'local' ? '本地拆分' : 'RunningHub 工作流拆分';
   return <div className={`smart-split-overlay${busy || recognizingIds.length ? " is-busy" : ""}`}>
@@ -588,14 +592,14 @@ export default function SmartSplitWorkspace({ image, onCancel, onStart }: Props)
     {step === 1 && <div className={`smart-split-panel ${mode !== 'api' ? 'smart-split-panel-local' : ''}`}>
       <div className="smart-split-panel-layout">
         <nav className="smart-split-mode-tabs" aria-label="拆分方式"><button className={mode === 'api' ? 'active' : ''} onClick={() => activate('api')}>API 拆分</button><button className={mode === 'local' ? 'active' : ''} onClick={() => activate('local')}>本地拆分</button><button className={mode === 'runninghub' ? 'active' : ''} onClick={() => activate('runninghub')}>RunningHub</button></nav>
-        <section className="smart-split-panel-content">{firstPanel}<div className="smart-split-tencent-config"><button disabled={busy} onClick={() => setTencentConfigOpen(open => !open)}>腾讯云 OCR 配置</button>{tencentConfigOpen && tencentConfigFields}</div></section>
+        <section className="smart-split-panel-content">{firstPanel}</section>
       </div>
     </div>}
     {step === 2 && <div className="smart-split-preview-backdrop">
       <div className={`smart-split-panel is-preview ${mode !== 'api' ? 'smart-split-panel-local' : ''}`} role="dialog" aria-modal="true" aria-label={`${modeTitle}配置图层`}>
         <div className="smart-split-panel-layout">
           <nav className="smart-split-mode-tabs" aria-label="拆分方式"><button className={mode === 'api' ? 'active' : ''} onClick={() => activate('api')}>API 拆分</button><button className={mode === 'local' ? 'active' : ''} onClick={() => activate('local')}>本地拆分</button><button className={mode === 'runninghub' ? 'active' : ''} onClick={() => activate('runninghub')}>RunningHub</button></nav>
-          <section className="smart-split-panel-content"><h2>{modeTitle} · 配置图层</h2>{secondPanel}</section>
+          <section className="smart-split-panel-content"><div className="smart-split-preview-header"><h2>{modeTitle} · 配置图层</h2>{ocrModeSelect}</div>{secondPanel}</section>
         </div>
       </div>
     </div>}

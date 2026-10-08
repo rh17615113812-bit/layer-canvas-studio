@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { isIP } from 'node:net';
 import { runVisionOcr } from './visionOcr.mjs';
 import { runLocalOcr } from './localOcr.mjs';
 import { runTencentOcr } from './tencentOcr.mjs';
@@ -23,7 +24,15 @@ const VISION_API_URL = 'https://ark.cn-beijing.volces.com/api/plan/v3/chat/compl
 const VISION_MODEL = process.env.ARK_VISION_MODEL || 'doubao-seed-2-0-lite-260215';
 const localComfyUrl = value => {
   const url = new URL(String(value || process.env.COMFYUI_URL || 'http://127.0.0.1:8188'));
-  if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)) throw new Error('ComfyUI 地址只允许本机 localhost、127.0.0.1 或 ::1。');
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const loopback = hostname === 'localhost' || hostname === '::1'
+    || (isIP(hostname) === 4 && hostname.startsWith('127.'));
+  const privateIpv4 = isIP(hostname) === 4 && (() => {
+    const [first, second] = hostname.split('.').map(Number);
+    return first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168);
+  })();
+  const privateIpv6 = isIP(hostname) === 6 && /^(fc|fd|fe[89ab])/i.test(hostname);
+  if (!['http:', 'https:'].includes(url.protocol) || !(loopback || privateIpv4 || privateIpv6)) throw new Error('ComfyUI 地址仅支持本机或私有局域网 IP（IPv4/IPv6），不支持公网地址。');
   return url.origin;
 };
 const comfyWorkflow = supplied => {

@@ -15,6 +15,7 @@ export type RunningHubConfig = {
   backgroundPromptNodeId?: string;
   backgroundPromptFieldName?: string;
   backgroundPrompt?: string;
+  splitBackground?: boolean;
 };
 
 const loadImage = (source: string) => new Promise<HTMLImageElement>((resolve, reject) => {
@@ -55,12 +56,15 @@ export async function runningHubLayerSplit(
   groupingBoxes: SmartSplitBox[] = boxes,
 ): Promise<LayerNode[]> {
   if (!boxes.length) throw new Error('RunningHub 拆分需要先手动框选或使用 AI 自动框选。');
+  const includeBackground = config.splitBackground !== false;
   const promptNodeId = config.backgroundPromptNodeId?.trim() || '';
   const promptFieldName = config.backgroundPromptFieldName?.trim() || 'text';
   const prompt = config.backgroundPrompt?.trim() || '';
-  if (!promptNodeId) throw new Error('请在 RunningHub 配置中填写背景提示词节点 ID。');
-  if (!prompt) throw new Error('背景分离提示词不能为空。');
-  const promptOverride: WorkflowPromptOverride = { nodeId: promptNodeId, fieldName: promptFieldName, prompt };
+  if (includeBackground && !promptNodeId) throw new Error('请在 RunningHub 配置中填写背景提示词节点 ID。');
+  if (includeBackground && !prompt) throw new Error('背景分离提示词不能为空。');
+  const promptOverride: WorkflowPromptOverride | undefined = includeBackground
+    ? { nodeId: promptNodeId, fieldName: promptFieldName, prompt }
+    : undefined;
   // Background text belongs only to the explicit whole-image override.
   // Region jobs submit workflow inputs without any prompt configuration.
   const workflowConfig = {
@@ -76,6 +80,7 @@ export async function runningHubLayerSplit(
     overlapGroups.flatMap(group => group.boxIds.map(id => [id, group] as const)),
   );
   const results: LayerNode[] = [];
+  if (includeBackground) {
   const backgroundResponse = await fetch('http://127.0.0.1:8787/api/runninghub/layer-split', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -103,6 +108,7 @@ export async function runningHubLayerSplit(
     assetWidth: backgroundAsset.naturalWidth,
     assetHeight: backgroundAsset.naturalHeight,
   });
+  }
 
   for (const [index, box] of boxes.entries()) {
     const groupingIndex = groupingIndexByBoxId.get(box.id) ?? index;
