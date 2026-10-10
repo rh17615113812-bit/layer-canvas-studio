@@ -3,6 +3,7 @@ import type { LayerNode } from './types';
 import { OVERLAP_MASK_COLOR, getOverlapMasksForBox } from './boxOverlap.ts';
 import type { WorkflowPromptOverride } from './backgroundPrompt';
 import { backgroundComfyWorkflow } from './comfyWorkflow.ts';
+import { regionPromptForBox } from './regionPrompt.ts';
 
 export type LocalComfyConfig = {
   comfyUrl: string;
@@ -14,6 +15,9 @@ export type LocalComfyConfig = {
   backgroundPrompt?: string;
   backgroundResolutionNodeId?: string;
   backgroundResolution?: number;
+  regionPromptNodeId?: string;
+  regionPromptFieldName?: string;
+  preserveOriginalText?: boolean;
   splitBackground?: boolean;
 };
 
@@ -103,6 +107,8 @@ export async function localComfyLayerSplit(
   const image = await loadImage(source);
   const results: LayerNode[] = [];
   const groupingIndexByBoxId = new Map(groupingBoxes.map((box, index) => [box.id, index]));
+  const regionPromptNodeId = config.regionPromptNodeId?.trim() || '490';
+  const regionPromptFieldName = config.regionPromptFieldName?.trim() || 'text';
 
   if (includeBackground) {
   const backgroundResponse = await fetch('http://127.0.0.1:8787/api/comfyui/layer-split', {
@@ -158,6 +164,11 @@ export async function localComfyLayerSplit(
         workflow: config.workflow,
         inputNodeId: config.inputNodeId,
         outputNodeIds: config.outputNodeIds,
+        promptOverride: {
+          nodeId: regionPromptNodeId,
+          fieldName: regionPromptFieldName,
+          prompt: regionPromptForBox(overlapMasks.length > 0, config.preserveOriginalText),
+        },
       }),
     });
     const body = await response.json().catch(() => ({}));

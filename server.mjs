@@ -78,8 +78,8 @@ const runComfyWorkflow = async ({ image, comfyUrl, workflow: suppliedWorkflow, i
     const promptFieldName = String(promptOverride?.fieldName || '').trim();
     const prompt = typeof promptOverride?.prompt === 'string' ? promptOverride.prompt.trim() : '';
     const promptInputs = workflow[promptNodeId]?.inputs;
-    if (!promptNodeId || !promptFieldName || !prompt) throw new Error('背景分离提示词节点 ID、字段名和提示词都必须填写。');
-    if (!promptInputs || typeof promptInputs[promptFieldName] !== 'string') throw new Error(`ComfyUI 背景提示词节点 ${promptNodeId} 的文本字段 ${promptFieldName} 不存在。`);
+    if (!promptNodeId || !promptFieldName || !prompt) throw new Error('ComfyUI 提示词节点 ID、字段名和提示词都必须填写。');
+    if (!promptInputs || typeof promptInputs[promptFieldName] !== 'string') throw new Error(`ComfyUI 提示词节点 ${promptNodeId} 的文本字段 ${promptFieldName} 不存在。`);
     promptInputs[promptFieldName] = prompt;
   }
   const file = dataUrlFile(image);
